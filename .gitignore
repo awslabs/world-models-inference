@@ -1,0 +1,71 @@
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# CDK
+cdk/cdk.out/
+cdk/cdk.context.json
+cdk/import-map.json
+
+# Secrets
+.env
+frontend/public/aws-exports.json
+
+# Python
+.venv
+__pycache__
+__pycache__/
+*.pyc
+*.py[cod]
+.pytest_cache/
+
+# Node / frontend
+**/node_modules
+**/.vite
+dist/
+
+# CDK
+**/cdk.out
+**/cdk.out.dsr
+*.js.map
+*.d.ts
+
+# DSR working dir (curated outputs live in security-scans/)
+.dsr/
+
+# Model weights (staged in S3)
+weights/
+
+# External repos checked out for reference
+repos/
+
+# Local UI config
+
+frontend/public/config.js
+cdk/cdk.out2/
+
+# EC2 deployment state (contains instance IPs, account IDs)
+.ec2-deployments/
+
+# Internal comms
+.slack-messages/
+
+# Claude Code local state
+.claude/
+docs/superpowers/
+
+strategy/*
+
+# E2E test screenshots
+e2e-screenshots/
+
+# Playwright MCP artifacts
+.playwright-mcp/
+blog/*
+# Security scan evidence (share directly with reviewer; may contain account IDs)
+security-scans/
+security-scans-*.zip
+
+# Internal meeting notes — never publish
+.meeting_summary/

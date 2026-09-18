@@ -1,0 +1,25 @@
+{
+  "name": "world-model-accelerator-cdk",
+  "version": "1.0.0",
+  "description": "CDK infrastructure for World Model Inference: shared foundation + per-deployment model stacks",
+  "main": "bin/app.js",
+  "scripts": {
+    "build": "tsc",
+    "cdk": "cdk",
+    "typecheck": "tsc --noEmit",
+    "deploy:foundation": "cdk deploy WorldModelFoundation --require-approval never",
+    "synth": "cdk synth",
+    "diff": "cdk diff"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "aws-cdk": "2.1134.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "aws-cdk-lib": "2.262.2",
+    "constructs": "^10.3.0",
+    "js-yaml": "^4.1.1"
+  }
+}

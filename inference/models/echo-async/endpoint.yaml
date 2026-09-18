@@ -1,0 +1,12 @@
+# Echo async test endpoint
+
+model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/echo-async/
+version: 0.1.0
+
+sagemaker:
+  instance: ml.g5.2xlarge
+  scale: { min: 0, max: 1 }
+  output: s3://world-model-accelerator-outputs-${AWS_ACCOUNT_ID}/echo-async/
+
+ec2:
+  instance: g5.2xlarge

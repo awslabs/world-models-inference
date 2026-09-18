@@ -1,0 +1,12 @@
+# Echo real-time test endpoint
+
+model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/echo-realtime/
+version: 0.1.0
+
+sagemaker:
+  instance: ml.g5.2xlarge
+  scale: { min: 0, max: 10 }
+  max_concurrent: 1   # stateful (position) — one user per container
+
+ec2:
+  instance: g5.12xlarge

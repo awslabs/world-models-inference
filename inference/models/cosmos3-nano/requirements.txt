@@ -1,0 +1,13 @@
+diffusers @ git+https://github.com/huggingface/diffusers.git
+accelerate
+av
+cosmos_guardrail
+huggingface_hub
+imageio
+imageio-ffmpeg
+torch
+torchvision
+transformers
+fastapi
+uvicorn
+pillow

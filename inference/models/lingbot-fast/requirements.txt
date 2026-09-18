@@ -1,0 +1,32 @@
+# Runtime requirements for lingbot-fast.
+#
+# On the AWS Deep Learning AMI torch / torchvision are pre-installed and must NOT be
+# upgraded (doing so breaks the CUDA match against the pre-built NCCL / flash-attn).
+# The deploy-ec2.sh user-data installs these with `pip install --no-deps` for anything
+# that would otherwise pull torch as a transitive dep.
+
+# --- Upstream inference deps (match lingbot-world/requirements.txt) ---
+diffusers>=0.31.0
+transformers>=4.49.0,<=4.51.3
+tokenizers>=0.20.3
+accelerate>=1.1.1
+opencv-python>=4.9.0.80
+imageio[ffmpeg]
+imageio-ffmpeg
+easydict
+ftfy
+tqdm
+numpy>=1.23.5,<2
+scipy
+einops
+
+# --- Server + CLI deps (pure Python, safe to install normally) ---
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+pydantic>=2.0
+pillow
+boto3
+
+# --- flash-attn is installed separately by deploy-ec2.sh using a prebuilt wheel
+#     matching the DLC's torch+CUDA. DO NOT list it here — pip would try to compile.

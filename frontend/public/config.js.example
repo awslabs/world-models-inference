@@ -1,0 +1,19 @@
+// This file is loaded by index.html before the React bundle and provides APP_CONFIG.
+// Committed as an empty template; `./deploy ui` overwrites it locally with the
+// live EC2 endpoint URL, so local edits to this file are expected and not shared.
+window.APP_CONFIG = {
+  region: '',
+  userPoolId: '',
+  userPoolClientId: '',
+  websocketUrl: '',
+  lingbotApiUrl: '',
+  // Shared bearer token for the inference endpoint. `./deploy ui` fills this in
+  // from the SSM SecureString so the local UI can call a secured endpoint.
+  apiToken: '',
+  environment: 'template',
+  cognitoDomain: '',
+  redirectSignIn: '',
+  redirectSignOut: '',
+  demoMode: true,
+  ui: 'worlds',
+};

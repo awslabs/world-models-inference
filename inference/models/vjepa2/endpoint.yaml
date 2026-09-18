@@ -1,0 +1,15 @@
+# V-JEPA 2 — realtime video encoder (Meta FAIR)
+# https://github.com/facebookresearch/vjepa2
+# Weights: facebook/vjepa2-vitg-fpc64-384 (ViT-giant, 384px, 1B params)
+# Stage: python scripts/stage-weights.py vjepa2 --source hf:facebook/vjepa2-vitg-fpc64-384
+
+model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/vjepa2-vitg-fpc64-384/
+version: 0.1.0
+
+sagemaker:
+  instance: ml.g5.2xlarge
+  scale: { min: 0, max: 100 }
+  max_concurrent: 1   # one car/session per container — auto-scale per user
+
+ec2:
+  instance: g5.2xlarge

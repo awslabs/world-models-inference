@@ -1,0 +1,79 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# CI for the World Model Inference accelerator. No AWS credentials required:
+# everything here is offline (unit tests, typechecks, an offline CDK synth of
+# the foundation stack, and a bash syntax check). Live deploy tests are gated
+# behind env vars in the test files and only run against a real endpoint.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Run tests (dev group installs fastapi/httpx so nothing silently skips)
+        run: uv run --group dev python -m pytest tests/ -q
+
+  cdk:
+    name: CDK typecheck
+    runs-on: ubuntu-latest
+    # tsc over aws-cdk-lib's large type surface can exhaust the default heap.
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    defaults:
+      run:
+        working-directory: cdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      # tsc is the offline correctness gate. A full `cdk synth` is deliberately
+      # NOT run here: the VPC/AMI/SSM constructs make credentialed lookups at
+      # synth time, so it can't run hermetically in CI without real AWS access.
+      # Type-checking catches CDK construct and prop breakage without creds.
+      - name: TypeScript compile
+        run: npx tsc --noEmit
+
+  frontend:
+    name: Frontend typecheck + build
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  scripts:
+    name: Shell script syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n on deploy.sh
+        run: bash -n deploy.sh
+      - name: python compile scripts
+        run: python3 -m py_compile scripts/build-image.py scripts/stage-weights.py

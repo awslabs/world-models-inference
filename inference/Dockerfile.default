@@ -1,0 +1,94 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Shared default image for world-model cartridges.
+#
+# Most cartridges differ only by base image and pip deps, so they don't need
+# their own Dockerfile: drop a `requirements.txt` in the model directory and
+# this file builds it. `scripts/build-image.py` uses this automatically when
+# `inference/models/<id>/Dockerfile` does not exist.
+#
+# A model that needs genuinely custom build steps (native CUDA extensions,
+# upstream git clones, pinned toolchains — see `lyra-2`) can still ship its own
+# Dockerfile, which always takes precedence over this one.
+#
+# Build context is the REPO ROOT, so paths below are repo-relative:
+#   docker build -f inference/Dockerfile.default \
+#     --build-arg MODEL_ID=<id> [--build-arg BASE_IMAGE=<image>] .
+
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.01-py3
+FROM ${BASE_IMAGE}
+
+# Which cartridge to package. Required — the build fails fast below if unset,
+# rather than silently producing an image with no model code.
+ARG MODEL_ID
+RUN test -n "${MODEL_ID}" || (echo "ERROR: --build-arg MODEL_ID=<id> is required" >&2 && exit 1)
+
+# SageMaker hosting contract. accept-bind-to-port lets SageMaker choose the
+# port; real-time cartridges additionally advertise bidirectional streaming via
+# their own Dockerfile (or by extending this one).
+LABEL com.amazonaws.sagemaker.capabilities.accept-bind-to-port=true
+
+ENV SM_MODEL_DIR=/opt/ml/model
+ENV SM_MODULE_DIR=/opt/ml/code
+ENV SAGEMAKER_BIND_TO_PORT=8080
+
+# Serving deps every cartridge needs: the shared FastAPI app (lib/app.py) uses
+# Form/File routes, which require python-multipart, and websockets for the
+# real-time path. Installed before the model's own requirements so this layer
+# stays cached across cartridges.
+RUN pip install --no-cache-dir \
+        fastapi "uvicorn[standard]" python-multipart websockets \
+        imageio imageio-ffmpeg
+
+# Model-specific deps. Copied on its own first so editing runner.py doesn't
+# invalidate the (slow) dependency layer.
+#
+# --no-deps by default: the NGC base images ship a CUDA-matched torch/torchvision
+# (and NCCL), and letting pip resolve transitive deps can silently swap torch for
+# a wheel built against a different CUDA — which breaks flash-attn and NCCL. Set
+# PIP_NO_DEPS=0 for cartridges whose requirements.txt genuinely needs resolution.
+ARG PIP_NO_DEPS=1
+COPY inference/models/${MODEL_ID}/requirements.txt /opt/ml/code/requirements.txt
+RUN if [ "${PIP_NO_DEPS}" = "1" ]; then \
+        pip install --no-cache-dir --no-deps -r /opt/ml/code/requirements.txt; \
+    else \
+        pip install --no-cache-dir -r /opt/ml/code/requirements.txt; \
+    fi
+
+# Optional flash-attn. It must match the base image's torch + CUDA + Python ABI
+# exactly, so we install a prebuilt wheel rather than let pip compile (a source
+# build against mismatched headers fails, and compiling here is very slow).
+# Cartridges that don't need it omit the arg — the vendored attention code falls
+# back to torch's scaled_dot_product_attention.
+#
+# Pass the URL with `{ABI}` where the C++11-ABI flag goes; we substitute TRUE or
+# FALSE by asking the installed torch, so the same manifest works across bases.
+ARG FLASH_ATTN_WHEEL=
+RUN if [ -n "${FLASH_ATTN_WHEEL}" ]; then \
+        ABI=$(python -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')") && \
+        URL=$(echo "${FLASH_ATTN_WHEEL}" | sed "s/{ABI}/${ABI}/g") && \
+        echo "torch C++11 ABI: ${ABI} — installing ${URL}" && \
+        pip install --no-cache-dir "${URL}"; \
+    else \
+        echo "No FLASH_ATTN_WHEEL given — using torch SDPA fallback"; \
+    fi
+
+# Shared serving framework, then the cartridge itself.
+COPY inference/lib/ /opt/ml/code/lib/
+COPY inference/models/${MODEL_ID}/ /opt/ml/code/
+
+# Fail at build time (not on an expensive GPU) if the cartridge doesn't expose
+# the Runner contract the shared server expects.
+RUN test -f /opt/ml/code/runner.py \
+    || (echo "ERROR: ${MODEL_ID} has no runner.py" >&2 && exit 1) \
+    && grep -q "def create_runner" /opt/ml/code/runner.py \
+    || (echo "ERROR: ${MODEL_ID}/runner.py must define create_runner()" >&2 && exit 1)
+
+# Run as a non-root user (M3). /tmp is world-writable for job/output scratch.
+RUN useradd --create-home appuser && chown -R appuser /opt/ml/code
+USER appuser
+
+WORKDIR /opt/ml/code
+EXPOSE 8080
+ENTRYPOINT ["./lib/serve"]

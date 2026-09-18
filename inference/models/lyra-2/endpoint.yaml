@@ -1,0 +1,34 @@
+# Nvidia Lyra 2.0 — async image-to-3D-world video generation
+# https://github.com/nv-tlabs/lyra · weights: nvidia/Lyra-2.0
+# In-process, single-GPU: context-parallel is not wired, so deploy on one GPU
+# (WORLD_SIZE=1). The runner imports the upstream lyra_2 package (load-once).
+
+model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/lyra-2/
+version: 0.1.0
+
+# The Lyra 2.0 *weights* are under the NVIDIA Internal Scientific Research and
+# Development Model License — internal R&D only; not for production, public
+# deployment, or redistribution. You are responsible for compliant use in your
+# own account. deploy.sh gates deployment on acknowledging this.
+license: nvidia-internal-research
+license_url: https://huggingface.co/nvidia/Lyra-2.0
+license_restricted: true
+
+# Single-GPU 80GB-class model (net peaks ~74GB; verified on 1× H100 80GB). It
+# does NOT fit smaller GPUs — a 46GB L40S OOMs at load, and 24GB (A10G) has no
+# chance (see NOTES.md "Memory"). The runner is single-GPU, so a multi-GPU box
+# (p5.48xlarge = 8× H100) would leave 7 GPUs idle. p5.4xlarge (1× H100) is the
+# supported, verified target for both deploy paths.
+sagemaker:
+  instance: ml.p5.4xlarge
+  scale: { min: 0, max: 2 }
+  output: s3://world-model-accelerator-outputs-${AWS_ACCOUNT_ID}/lyra-2/
+
+mode: async
+
+hf:
+  - { repo: nvidia/Lyra-2.0, subdir: "" }
+
+ec2:
+  instance: p5.4xlarge
+  volume_size: 500

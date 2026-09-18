@@ -1,0 +1,15 @@
+# Matrix Game 3.0 — real-time interactive world model (Skywork)
+# https://github.com/SkyworkAI/Matrix-Game-3.0 · weights: Skywork/Matrix-Game-3.0
+
+model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/matrix-game-3/
+version: 0.1.0
+
+sagemaker:
+  instance: ml.p5.48xlarge
+  scale: { min: 1, max: 4 }
+
+hf:
+  - { repo: Skywork/Matrix-Game-3.0, subdir: "" }
+
+ec2:
+  instance: g5.2xlarge

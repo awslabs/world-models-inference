@@ -1,0 +1,13 @@
+# Runtime deps for this cartridge.
+#
+# The shared Dockerfile already installs the serving stack (fastapi, uvicorn,
+# python-multipart, websockets, imageio) — don't repeat those here.
+#
+# By default these install with --no-deps so pip cannot replace the CUDA-matched
+# torch/torchvision the NGC base image ships. If your deps genuinely need
+# resolution, set `pip_no_deps: 0` in endpoint.yaml and list everything you need.
+#
+# Do NOT pin torch/torchvision — take what the base image provides.
+
+# transformers>=4.49.0
+# diffusers>=0.31.0

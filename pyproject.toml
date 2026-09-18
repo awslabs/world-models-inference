@@ -1,0 +1,40 @@
+[project]
+name = "world-model-accelerator"
+version = "0.1.0"
+description = "Deployment accelerator for world models on AWS."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+# Client-side + test/dev deps. Each endpoint's runtime deps live in
+# inference/models/<id>/requirements.txt and are installed into the container.
+dependencies = [
+    # test-endpoint.py — async mode
+    "boto3>=1.34",
+    # test-endpoint.py — real-time (bidi WebSocket) mode
+    "aws-sdk-sagemaker-runtime-http2>=0.6.0",
+    "smithy-aws-core>=0.6.0",
+    "huggingface-hub>=1.14.0",
+    "websockets>=16.0",
+]
+
+# Test/CI dependencies. The unit tests exercise the shared FastAPI serving layer
+# (inference/lib) without a GPU; without these installed, test_security.py and
+# test_app_integration.py silently skip via pytest.importorskip. CI installs this
+# group so those tests actually run: `uv sync --group dev` or
+# `pip install -e '.[dev]'`-equivalent via `uv pip install --group dev`.
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "python-multipart>=0.0.6",
+    "httpx>=0.27",
+    "requests>=2.31",
+]
+
+[tool.uv]
+package = false
+# Supply-chain dependency cooldown: wait 7 days before resolving a newly
+# published package version, so a freshly-compromised release is likely caught
+# and yanked before we pull it. Requires uv >= 0.8 (duration form).
+exclude-newer = "7 days"

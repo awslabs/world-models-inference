@@ -1,0 +1,9 @@
+#!/bin/bash
+echo "=== GPU Info ==="
+nvidia-smi 2>&1 || echo "nvidia-smi not available"
+echo "================"
+NPROC="${NPROC_PER_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
+NPROC="${NPROC:-1}"
+[ "$NPROC" -eq 0 ] && NPROC=1
+echo "Starting torchrun with nproc_per_node=$NPROC"
+exec torchrun --nproc_per_node="$NPROC" -m lib.serve "$@"
