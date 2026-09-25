@@ -16,8 +16,10 @@
  *   name     — deployment name (defaults to model)
  *   capacity — Capacity Block reservation ID (EC2 only)
  *   certificateArn — ACM cert ARN; enables HTTPS on the EC2 ALB (M1)
- *   apiTokenParam  — SSM SecureString name holding the shared API token; the
- *                    container reads the value at runtime (R1)
+ *   authMode       — 'cognito' (default in the container) or 'disabled'
+ *   cognitoUserPoolId, cognitoClientIds, cognitoScope
+ *                  — Cognito settings passed to the container. Not secret; the
+ *                    container verifies pool-issued access tokens against them.
  *   allowedOrigins — CORS allowlist passed to the container (R1)
  *   rateLimit      — per-IP req/min on inference routes (R1)
  */
@@ -39,8 +41,13 @@ if (model) {
   const target = (app.node.tryGetContext('target') as string) || 'sagemaker';
   const name = (app.node.tryGetContext('name') as string) || model;
   const capacity = app.node.tryGetContext('capacity') as string | undefined;
+  const capacitySubnets = app.node.tryGetContext('capacitySubnets') as string | undefined;
+  const instanceTypeOverride = app.node.tryGetContext('instanceType') as string | undefined;
   const certificateArn = app.node.tryGetContext('certificateArn') as string | undefined;
-  const apiTokenParam = app.node.tryGetContext('apiTokenParam') as string | undefined;
+  const authMode = app.node.tryGetContext('authMode') as string | undefined;
+  const cognitoUserPoolId = app.node.tryGetContext('cognitoUserPoolId') as string | undefined;
+  const cognitoClientIds = app.node.tryGetContext('cognitoClientIds') as string | undefined;
+  const cognitoScope = app.node.tryGetContext('cognitoScope') as string | undefined;
   const allowedOrigins = app.node.tryGetContext('allowedOrigins') as string | undefined;
   const rateLimit = app.node.tryGetContext('rateLimit') as string | undefined;
 
@@ -51,8 +58,13 @@ if (model) {
     target: target as 'ec2' | 'sagemaker',
     manifest: loadManifest(model, env.account!),
     capacityReservationId: capacity,
+    capacitySubnetIds: capacitySubnets,
+    instanceTypeOverride,
     certificateArn,
-    apiTokenParam,
+    authMode,
+    cognitoUserPoolId,
+    cognitoClientIds,
+    cognitoScope,
     allowedOrigins,
     rateLimit,
   });

@@ -37,8 +37,12 @@ creation.
 ./deploy.sh list                     # available models
 ./deploy.sh status                   # active deployments + endpoint URLs
 ./deploy.sh ui                       # catalogue UI at localhost:3000
+./deploy.sh bench waypoint-1-5 60    # performance report for a real-time endpoint
 ./deploy.sh destroy lingbot-fast     # tear down — p5.48xlarge is ~$55/hr!
 ```
+
+Models with weights need them staged to S3 once before the first deploy — see the
+cartridge's own README, or `python scripts/stage-weights.py --help`.
 
 Hitting an error? See **[Troubleshooting](docs/TROUBLESHOOTING.md)**.
 
@@ -46,18 +50,24 @@ Hitting an error? See **[Troubleshooting](docs/TROUBLESHOOTING.md)**.
 
 | ID | Type | Mode | Instance | Wired? |
 |----|------|------|----------|--------|
+| [`waypoint-1-5`](inference/models/waypoint-1-5/README.md) | real-time | real-time | `p5.4xlarge` · 1× H100 | ✅ end-to-end · **82 fps at 720p** |
+| [`matrix-game-3`](inference/models/matrix-game-3/README.md) | real-time | real-time | `p5.48xlarge` · 8× H100 | ✅ end-to-end · ~35 fps at 832×480 |
 | [`lingbot-fast`](https://github.com/robbyant/lingbot-world) | video generation | async | `p5.48xlarge` · 8× H100 | ✅ end-to-end |
 | [`cosmos3-nano`](https://github.com/NVIDIA/Cosmos) | video generation | async | `g6e.12xlarge` · 4× L40S | ✅ end-to-end |
 | [`lyra-2`](https://github.com/nv-tlabs/lyra) | image→3D-world video | async | `p5.4xlarge` · 1× H100 | ✅ end-to-end |
-| [`vjepa2`](https://github.com/facebookresearch/vjepa2) | representation | real-time | `g5.2xlarge` · 1× A10G | ✅ end-to-end |
-| [`matrix-game-3`](https://github.com/SkyworkAI/Matrix-Game-3.0) | real-time | real-time | `g5.2xlarge` (placeholder) | ❌ scaffold only |
+| [`vjepa2`](https://github.com/facebookresearch/vjepa2) | representation | real-time | `g5.2xlarge` · 1× A10G | ⚠️ encoder only |
+
+The two real-time cartridges have their own READMEs covering the session
+protocol, hardware trade-offs and tuning knobs. For both, **the fps a remote
+player sees is set by their link, not by the GPU** — a 720p frame is ~73 KiB, so
+60 fps needs ~36 Mbit/s sustained.
 
 `echo-async` and `echo-realtime` are cheap no-weights cartridges for verifying a
 deployment end to end. Details and caveats: [Endpoints](docs/ENDPOINTS.md).
 
 ## Architecture
 
-![World Model Accelerator architecture on AWS. The developer runs ./deploy.sh, which builds the container image and stages model weights via two AWS CodeBuild projects, pushing the image to Amazon ECR and the weights to an Amazon S3 artifacts bucket. AWS CDK then deploys a VPC spanning two availability zones: an Application Load Balancer in the public subnet is the only public entry point, forwarding port 8080 to a single GPU instance in a private subnet with no public IP. The instance pulls its image from ECR, syncs weights from S3 over an S3 gateway endpoint, reads its API token from AWS Systems Manager, and runs torchrun — rank 0 serves FastAPI while ranks 1 to N-1 follow in lockstep. Eight interchangeable model cartridges plug into the same stack. Amazon SageMaker is an optional alternate deploy target.](docs/diagrams/architecture-v1-cartridge-platform.png)
+![World Model Accelerator architecture on AWS. The developer runs ./deploy.sh, which builds the container image and stages model weights via two AWS CodeBuild projects, pushing the image to Amazon ECR and the weights to an Amazon S3 artifacts bucket. AWS CDK then deploys a VPC spanning two availability zones: an Application Load Balancer in the public subnet is the only public entry point, forwarding port 8080 to a single GPU instance in a private subnet with no public IP. The instance pulls its image from ECR, syncs weights from S3 over an S3 gateway endpoint, and runs torchrun — rank 0 serves FastAPI while ranks 1 to N-1 follow in lockstep. Requests are authenticated against an Amazon Cognito user pool. Six interchangeable model cartridges plug into the same stack. Amazon SageMaker is an optional alternate deploy target.](docs/diagrams/architecture-v1-cartridge-platform.png)
 
 `./deploy.sh` builds the container image and stages weights via two CodeBuild
 projects, then CDK deploys a two-AZ VPC: an Application Load Balancer is the only
@@ -74,15 +84,18 @@ Full walkthrough: **[Architecture](docs/ARCHITECTURE.md)**.
 |---|---|---|
 | `p5.48xlarge` | ~$31–55/hr | 8× H100. **Destroy when done.** |
 | `g6e.12xlarge` | ~$10/hr | 4× L40S |
+| `p5.4xlarge` | ~$8/hr | 1× H100 — usually needs a Capacity Block |
 | `g5.2xlarge` | ~$1.20/hr | 1× A10G — cheapest smoke test |
 
 Weight storage is one-off: `lingbot-fast` ~234 GB (~$5.40/mo), `cosmos3-nano`
-~35 GB, `vjepa2` ~4 GB. Later launches sync from S3 instead of Hugging Face.
+~35 GB, `waypoint-1-5` ~12 GB, `vjepa2` ~4 GB. Later launches sync from S3
+instead of Hugging Face.
 
 ## Security
 
-`./deploy.sh` restricts ALB ingress to your own public IP and provisions a shared
-bearer token in SSM, so the endpoint is authenticated by default. The GPU instance
+`./deploy.sh` restricts ALB ingress to your own public IP and provisions an Amazon
+Cognito user pool, so the endpoint is authenticated by default — the service verifies
+Cognito access tokens and holds no credential scheme of its own. The GPU instance
 sits in a private subnet with no public IP. The ALB serves **plain HTTP** unless you
 supply an ACM certificate via `CERTIFICATE_ARN`.
 
@@ -99,8 +112,7 @@ Before exposing anything to untrusted networks, read
 | [Endpoints](docs/ENDPOINTS.md) | Per-model detail, instance sizing, known gaps |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Failure modes, GPU capacity, Capacity Block Reservations |
 | [Security](docs/SECURITY.md) | Auth, network posture, hardening for production |
-| [Pattern specification](docs/ACCELERATOR_PATTERNS.md) | Design spec (draft, April 2026) — aspirational, not shipped |
-| [Platform vision](docs/WORLD_MODELS_PLATFORM.md) | Where this is heading beyond what ships today |
+| [Model licences](docs/MODEL_LICENSES.md) | Per-cartridge weights/code licences and the deploy-time gate |
 
 ## License
 
@@ -108,3 +120,10 @@ Apache 2.0 — see [LICENSE](LICENSE). Includes code from
 [LingBot-World](https://github.com/robbyant/lingbot-world) and
 [SAM 2](https://github.com/facebookresearch/sam2), both Apache 2.0; see
 [NOTICE](NOTICE) for attribution.
+
+**The models are licensed separately, and not all of them permit commercial use.**
+This repo being Apache 2.0 says nothing about the weights it downloads at deploy time.
+Before you deploy anything, read **[Model licences](docs/MODEL_LICENSES.md)** — it
+records the weights licence, the upstream code licence, and what each one restricts,
+per cartridge. `lyra-2` in particular is internal research only, and `deploy.sh`
+will refuse to deploy it until you acknowledge that.

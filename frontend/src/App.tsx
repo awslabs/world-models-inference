@@ -41,7 +41,7 @@ function App() {
   // Demo mode: skip auth entirely so the UI can be previewed on CloudFront
   const isDemoMode = (() => { try { return getConfig().demoMode === true; } catch { return false; } })();
 
-  // `./deploy ui` sets this to 'lingbot' → render the World Foundry catalogue
+  // `./deploy ui` sets this to 'lingbot' → render the World Model Inference catalogue
   // pointing at a live EC2 endpoint. No auth, no lobby, no WebSocket.
   const uiMode = (() => { try { return getConfig().ui || 'worlds'; } catch { return 'worlds'; } })();
   const apiUrl = (() => { try { return getConfig().lingbotApiUrl; } catch { return ''; } })();

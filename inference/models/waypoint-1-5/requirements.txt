@@ -1,0 +1,6 @@
+# Informational only — this cartridge ships its own Dockerfile, which installs
+# torch 2.11 (cu128) and then `world_engine` (pinned release) with full
+# dependency resolution. See Dockerfile for the real install steps.
+#
+# world_engine==1.5.6 pulls in: taehv, einops, tensordict, transformers>=5.3,
+# ftfy, diffusers, huggingface-hub, omegaconf, accelerate, gemlite, triton.

@@ -30,3 +30,10 @@ mode: async
 ec2:
   instance: p5.48xlarge
   volume_size: 500
+
+# --- Weights licence ---------------------------------------------------------
+# Verified 2026-09-21: both weight repos are tagged apache-2.0 on HF. The 53
+# vendored upstream files under wan/ are Apache-2.0 too (UPSTREAM_LICENSE.txt).
+license: Apache-2.0
+license_url: https://huggingface.co/robbyant/lingbot-world-fast
+license_restricted: false

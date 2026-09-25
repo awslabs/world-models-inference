@@ -1,0 +1,56 @@
+# Overworld Waypoint-1.5-1B — real-time interactive world model (Overworld AI)
+# https://github.com/Overworldai/world_engine · weights: Overworld/Waypoint-1.5-1B
+#
+# Interaction: real-time. No `sagemaker.output` key on purpose — the framework
+# infers real-time mode from its absence, and the runner implements stream().
+#
+# Compute target: p5.4xlarge (1× H100 80GB), which is what this cartridge was
+# measured on — 82 fps at 720p with fp8w8a8. Alternatives, all single-GPU, set
+# with INSTANCE_TYPE=<type> ./deploy.sh waypoint-1-5:
+#
+#   g5.2xlarge   1× A10G   ~25 fps measured (Ampere: no fp8, auto-falls to int8)
+#   g6e.2xlarge  1× L40S   untested; Ada, so fp8 works — expected between the two
+#   g7e.2xlarge  1× RTX PRO 6000 Blackwell — closest shape to upstream's RTX 5090
+#                reference (they quote 72 fps fp8), but capacity was unobtainable
+#                in us-west-2 during the spike, so it is unmeasured here.
+#
+# The H100 uses under 5GB of its 80GB and sits at ~65% utilisation, so the card
+# is far larger than the model needs; it is the target because it is the one
+# that was proven, not because the model requires it.
+#
+# Single-GPU model: the DiT is 1.2B params (~4GB bf16) plus a tiny TAEHV
+# autoencoder. The whole HF repo is ~12GB because it duplicates the weights in
+# diffusers layout (transformer/, vae/) which the runner does not use.
+#
+# Licensing note: the model weights are Apache-2.0, but the `world_engine`
+# inference library installed in this cartridge's image is GPL-3.0. Fine for
+# an internal spike/demo; revisit before any redistribution of the image.
+
+model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/waypoint-1-5/
+version: 0.1.0
+
+# Weights licence. Apache-2.0 places no deployment restriction, so the gate is
+# off (license_restricted: false). The GPL-3.0 obligation described above
+# attaches to the built image, not to the weights.
+license: apache-2.0
+license_url: https://huggingface.co/Overworld/Waypoint-1.5-1B
+license_restricted: false
+
+# Ships its own Dockerfile: world_engine pins torch 2.11 + triton 3.6, newer
+# than any NGC base the shared Dockerfile.default supports.
+
+sagemaker:
+  instance: ml.g6e.2xlarge
+  scale: { min: 0, max: 1 }
+  max_concurrent: 1   # stateful session — one player per container
+
+# Weights to stage (both repos land under the same S3 prefix):
+#   python scripts/stage-weights.py waypoint-1-5 --source hf:Overworld/Waypoint-1.5-1B
+#   python scripts/stage-weights.py waypoint-1-5 --source hf:Overworld-Models/taehv1_5 --subdir taehv1_5
+hf:
+  - { repo: Overworld/Waypoint-1.5-1B, subdir: "" }
+  - { repo: Overworld-Models/taehv1_5, subdir: "taehv1_5" }
+
+ec2:
+  instance: p5.4xlarge
+  volume_size: 150

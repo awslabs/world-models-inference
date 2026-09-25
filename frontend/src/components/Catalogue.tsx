@@ -4,6 +4,7 @@
 import { useMemo, useState } from 'react';
 import { ArrowLeft, ExternalLink, Sparkles } from 'lucide-react';
 import { LingbotGenerator } from '@/components/LingbotGenerator';
+import { RealtimePlayer } from '@/components/RealtimePlayer';
 import {
   CARTRIDGES,
   CARTRIDGE_TYPES,
@@ -191,12 +192,14 @@ export const Catalogue = ({ endpointUrl }: { endpointUrl?: string }) => {
     [filter],
   );
 
-  // Detail view: a ready async cartridge → route to the batch generator UI
+  // Detail view: a ready async cartridge → the batch generator UI
   // (LingbotGenerator drives the /generate → /status → /result flow and adapts
-  // its controls per-cartridge via gen-profiles); otherwise → ComingSoon.
-  // fps === 0 marks the async batch cartridges; real-time ones (fps > 0) have
-  // their own WebSocket UI and aren't served here.
+  // its controls per-cartridge via gen-profiles); a ready real-time cartridge
+  // (fps > 0) → the interactive session player; otherwise → ComingSoon.
   if (selected) {
+    if (selected.status === 'ready' && selected.fps > 0) {
+      return <RealtimePlayer cart={selected} onBack={() => setSelected(null)} />;
+    }
     if (selected.status === 'ready' && selected.fps === 0) {
       return (
         <div className="flex flex-col gap-5">
@@ -218,7 +221,7 @@ export const Catalogue = ({ endpointUrl }: { endpointUrl?: string }) => {
       {/* Top nav bar */}
       <div className="flex items-center justify-between pb-3 border-b border-white/5">
         <div className="flex items-baseline gap-8">
-          <span className="font-bold text-white tracking-tight">World Foundry</span>
+          <span className="font-bold text-white tracking-tight">World Model Inference</span>
           <nav className="flex items-center gap-5">
             <span className="text-sm text-white border-b-2 border-game-accent pb-3 -mb-3">Catalogue</span>
             <span className="text-sm text-white/40 cursor-not-allowed">Docs</span>

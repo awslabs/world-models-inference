@@ -4,7 +4,7 @@
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-                <mxCell id="title" value="World Model Accelerator on AWS" style="text;html=1;fontSize=24;fontStyle=1;fontColor=#232F3E;align=left;verticalAlign=middle;" parent="1" vertex="1">
+                <mxCell id="title" value="World Model Inference on AWS" style="text;html=1;fontSize=24;fontStyle=1;fontColor=#232F3E;align=left;verticalAlign=middle;" parent="1" vertex="1">
                     <mxGeometry x="40" y="26" width="900" height="34" as="geometry"/>
                 </mxCell>
                 <mxCell id="subtitle" value="One parameterised stack. Models are interchangeable cartridges — adding one is adding a directory, not new infrastructure." style="text;html=1;fontSize=13;fontStyle=2;fontColor=#666666;align=left;verticalAlign=middle;" parent="1" vertex="1">
@@ -91,7 +91,7 @@
                 <mxCell id="c6" value="echo-realtime&#xa;g5.12xlarge · smoke test" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4AB29A;gradientDirection=north;fillColor=#1F8B6C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sagemaker_model;" parent="1" vertex="1">
                     <mxGeometry x="1150" y="745" width="52" height="52" as="geometry"/>
                 </mxCell>
-                <mxCell id="c7" value="matrix-game-3&#xa;scaffold — not wired" style="sketch=0;outlineConnect=0;fontColor=#8A8A8A;gradientColor=#C4CACD;gradientDirection=north;fillColor=#909BA0;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=2;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sagemaker_model;" parent="1" vertex="1">
+                <mxCell id="c7" value="matrix-game-3&#xa;p5.48xlarge · 8× H100 · real-time" style="sketch=0;outlineConnect=0;fontColor=#8A8A8A;gradientColor=#C4CACD;gradientDirection=north;fillColor=#909BA0;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=2;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sagemaker_model;" parent="1" vertex="1">
                     <mxGeometry x="1370" y="745" width="52" height="52" as="geometry"/>
                 </mxCell>
                 <mxCell id="c8" value="_template&#xa;copy to add a model" style="sketch=0;outlineConnect=0;fontColor=#8A8A8A;gradientColor=#E3E7E8;gradientDirection=north;fillColor=#B6BEC2;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=2;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sagemaker_model;" parent="1" vertex="1">
@@ -202,7 +202,7 @@
                 <mxCell id="e12" value="private path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#277116;endArrow=blockThin;endFill=1;fontSize=10;labelBackgroundColor=#FFFFFF;exitX=0.75;exitY=1;entryX=0.75;entryY=0;" parent="1" source="ec2" target="vpce" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e13" value="config · token" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1;strokeColor=#C7131F;endArrow=blockThin;endFill=1;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.75;entryY=0;" parent="1" source="ssm" target="ec2" edge="1">
+                <mxCell id="e13" value="config params" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1;strokeColor=#C7131F;endArrow=blockThin;endFill=1;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.75;entryY=0;" parent="1" source="ssm" target="ec2" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="1570" y="490"/>
@@ -249,8 +249,14 @@
                 <mxCell id="s3out" value="S3 outputs&#xa;generated video" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#60A337;gradientDirection=north;fillColor=#277116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;labelBackgroundColor=#FFFFFF;" parent="1" vertex="1">
                     <mxGeometry x="1145" y="250" width="60" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="ssm" value="Systems Manager&#xa;registry · API token" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager;labelBackgroundColor=#FFFFFF;" parent="1" vertex="1">
+                <mxCell id="ssm" value="Systems Manager&#xa;foundation config registry" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager;labelBackgroundColor=#FFFFFF;" parent="1" vertex="1">
                     <mxGeometry x="1540" y="250" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="cognito" value="Amazon Cognito&#xa;user pool · verifies access tokens" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#F54749;gradientDirection=north;fillColor=#C7131F;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cognito;labelBackgroundColor=#FFFFFF;" parent="1" vertex="1">
+                    <mxGeometry x="1635" y="250" width="60" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ecognito" value="verifies access token (JWKS)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1;strokeColor=#C7131F;endArrow=blockThin;endFill=1;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;" parent="1" source="cognito" target="ec2" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>

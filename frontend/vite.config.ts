@@ -29,7 +29,14 @@ function buildProxy() {
     proxy.on('proxyReq', (proxyReq: any) => {
       proxyReq.setHeader('Authorization', `Bearer ${proxyToken}`)
     })
-    // WebSocket: the backend also accepts ?token=, which the client appends.
+// WebSocket upgrades fire proxyReqWs, NOT proxyReq — without this hook the
+    // upgrade reaches the backend with no credentials (the browser never has the
+    // token to append) and every session is refused with close code 1008.
+    // Setting the header rather than a query param also keeps the token out of
+    // ALB access logs, which is where `?token=` ends up.
+    proxy.on('proxyReqWs', (proxyReq: any) => {
+      proxyReq.setHeader('Authorization', `Bearer ${proxyToken}`)
+    })
   }
   const entry = (ws: boolean) => ({
     target: proxyTarget,

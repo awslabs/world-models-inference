@@ -18,18 +18,41 @@ dependencies = [
 ]
 
 # Test/CI dependencies. The unit tests exercise the shared FastAPI serving layer
-# (inference/lib) without a GPU; without these installed, test_security.py and
-# test_app_integration.py silently skip via pytest.importorskip. CI installs this
-# group so those tests actually run: `uv sync --group dev` or
-# `pip install -e '.[dev]'`-equivalent via `uv pip install --group dev`.
+# (inference/lib) and the per-cartridge action/frame codecs without a GPU;
+# without these installed, test_security.py and test_app_integration.py silently
+# skip via pytest.importorskip. CI installs this group so those tests actually
+# run: `uv sync --group dev` or `pip install -e '.[dev]'`-equivalent via
+# `uv pip install --group dev`.
+#
+# torch is deliberately absent: it is a multi-GB GPU dependency, and the tests
+# that touch runner code stub it (see tests/test_app_integration.py).
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    # test_matrix_game_3.py / test_cartridge_contract.py import these directly;
+    # CI runs in python:3.12-slim where nothing provides them by accident.
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "pyyaml>=6.0",
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.27.0",
     "python-multipart>=0.0.6",
     "httpx>=0.27",
     "requests>=2.31",
+    # Cartridge frame codecs (inference/models/*/frames.py). numpy is the array
+    # type they speak; simplejpeg is the encoder the containers actually use and
+    # pillow is the fallback for when it is missing — both are installed so the
+    # tests cover the shipping path, not only the fallback.
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "simplejpeg>=1.7",
+    # Read by tests/test_cartridge_parity.py to compare endpoint.yaml against
+    # the UI catalogue. Present transitively via huggingface-hub, but declared
+    # so the parity tests cannot silently importorskip themselves away.
+    "pyyaml>=6.0",
+    # Cognito access-token verification (inference/lib/cognito.py). The [crypto]
+    # extra provides the RS256 support Cognito signatures need.
+    "pyjwt[crypto]>=2.8",
 ]
 
 [tool.uv]

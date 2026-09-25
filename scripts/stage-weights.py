@@ -7,7 +7,7 @@ Triggers a build that downloads from HuggingFace Hub or torch.hub
 and syncs to S3. The CodeBuild project is managed by CDK (shared stack).
 
 Usage:
-  python scripts/stage-weights.py vjepa2-ac --source torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant
+  python scripts/stage-weights.py vjepa2 --source torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant
   python scripts/stage-weights.py lingbot-fast --source hf:robbyant/lingbot-world-base-cam
   python scripts/stage-weights.py lingbot-fast --source hf:robbyant/lingbot-world-fast --subdir lingbot_world_fast
 """

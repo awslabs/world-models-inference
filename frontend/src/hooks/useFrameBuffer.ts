@@ -10,12 +10,21 @@ interface UseFrameBufferOptions {
 
 /**
  * Renders raw JPEG Blobs from binary WebSocket frames directly to canvas.
- * Uses URL.createObjectURL for zero-copy display — no base64 overhead.
+ *
+ * Decodes ONE frame at a time and keeps only the newest one waiting. If frames
+ * arrive faster than the browser can decode them — which they do, since the
+ * server streams a whole chunk in a burst — the alternative is worse in two
+ * ways: every frame starts a concurrent decode, and they land in completion
+ * rather than arrival order, so the canvas jitters between old and new frames.
+ * Dropping stale frames instead keeps what you see pinned to the newest frame
+ * available, which is what matters when you are steering.
  */
 export const useFrameBuffer = ({ canvasRef, onFpsUpdate }: UseFrameBufferOptions) => {
   const runningRef = useRef(false);
   const displayCountRef = useRef(0);
   const fpsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingRef = useRef<Blob | null>(null);
+  const decodingRef = useRef(false);
   const cbRef = useRef(onFpsUpdate);
   useEffect(() => { cbRef.current = onFpsUpdate; }, [onFpsUpdate]);
 
@@ -30,29 +39,47 @@ export const useFrameBuffer = ({ canvasRef, onFpsUpdate }: UseFrameBufferOptions
 
   const stopPlayback = useCallback(() => {
     runningRef.current = false;
+    pendingRef.current = null;
     if (fpsTimerRef.current) { clearInterval(fpsTimerRef.current); fpsTimerRef.current = null; }
   }, []);
 
-  /** Display a binary JPEG Blob frame directly on the canvas. */
-  const pushFrame = useCallback((blob: Blob) => {
-    if (!runningRef.current) return;
+  const drainRef = useRef<() => void>(() => {});
+  drainRef.current = () => {
+    if (decodingRef.current || !runningRef.current) return;
+    const blob = pendingRef.current;
+    if (!blob) return;
+    pendingRef.current = null;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => {
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-    };
-    img.onerror = () => URL.revokeObjectURL(url);
-    img.src = url;
-    displayCountRef.current++;
-  }, [canvasRef]);
+    decodingRef.current = true;
+    // createImageBitmap decodes off the main thread, unlike Image + object URL.
+    createImageBitmap(blob)
+      .then((bmp) => {
+        if (runningRef.current) {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+          displayCountRef.current++;
+        }
+        bmp.close();
+      })
+      .catch(() => { /* a corrupt frame is not worth killing the session over */ })
+      .finally(() => {
+        decodingRef.current = false;
+        if (pendingRef.current) drainRef.current();
+      });
+  };
+
+  /** Queue a binary JPEG Blob frame for display, replacing any frame still waiting. */
+  const pushFrame = useCallback((blob: Blob) => {
+    if (!runningRef.current) return;
+    pendingRef.current = blob;
+    drainRef.current();
+  }, []);
 
   useEffect(() => () => {
     runningRef.current = false;

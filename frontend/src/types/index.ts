@@ -23,6 +23,11 @@ export interface AppConfig {
   /** Shared bearer token for the inference endpoint (R1). Sent as
    *  `Authorization: Bearer <token>` on REST calls and `?token=` on WebSockets.
    *  Written by `./deploy.sh ui` from the SSM SecureString. Empty in demo mode. */
+  /**
+   * Cognito ACCESS token, if the UI holds one directly. Usually absent: the
+   * `./deploy.sh ui` dev proxy injects the Authorization header server-side so
+   * no token is ever written into the browser bundle.
+   */
   apiToken?: string;
   /** Which UI to render. Default 'worlds' renders the LobbyScreen (real-time worlds).
    *  'lingbot' renders the LingbotGenerator (async video gen against lingbot-fast endpoint).

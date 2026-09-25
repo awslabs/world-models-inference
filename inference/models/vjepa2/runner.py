@@ -76,10 +76,30 @@ class VJepa2Runner(Runner):
     def stream(self, actions: ActionBuffer) -> Iterator[bytes]:
         from PIL import Image
 
+        last = None
         while actions.active:
             frame_bytes = actions.get()
             if frame_bytes is None:
                 break
+
+            # ActionBuffer is a latest-wins slot, not a queue: get() re-returns
+            # the payload already seen every <=0.1s whether or not the client
+            # sent anything. A cartridge that reads *held input* can re-apply it
+            # harmlessly, but here every read is a new video frame, so a camera
+            # that pauses would have its last frame appended ~10x a second —
+            # filling the 16-frame window with copies of one frame, racing
+            # frame_count ahead of the frames actually sent, and taking a
+            # duplicate as the session baseline if the pause lands during
+            # warm-up.
+            #
+            # Identity, not equality: the buffer hands back the very object it
+            # was given, so `is` distinguishes a re-delivery from a new message.
+            # Comparing bytes instead would also throw away real frames whenever
+            # the source is synthetic — a test pattern, a screen capture of a
+            # still, a looping clip — which encode byte-identically.
+            if frame_bytes is last:
+                continue
+            last = frame_bytes
 
             try:
                 img = Image.open(io.BytesIO(frame_bytes)).convert("RGB")

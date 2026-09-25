@@ -25,7 +25,8 @@ from pathlib import Path
 import torch
 
 from lib.app import create_app
-from lib.distributed import CMD_SHUTDOWN, broadcast_command, follower_loop, rank_zero, shutdown_cluster
+from lib.distributed import (CMD_SHUTDOWN, broadcast_command, follower_loop,
+                            init_command_channel, rank_zero, shutdown_cluster)
 from lib.jobs import JobStore, run_worker
 from lib.runner import Runner
 
@@ -64,6 +65,10 @@ def main():
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
     runner.setup(args.model_dir, device, rank, ws)
+
+    # After setup: the runner is what initialises the default process group,
+    # and this must run on every rank before the first command is sent.
+    init_command_channel()
 
     if rank_zero():
         jobs = JobStore()

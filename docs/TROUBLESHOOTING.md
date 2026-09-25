@@ -12,6 +12,9 @@
 | `Cloud assembly schema version mismatch … found 54.0.0` | Your **global** CDK CLI is older than the pinned `aws-cdk-lib` — see [CDK version](#cdk-version) |
 | Endpoint returns 401 / WebSocket closes with 1008 | Auth is on by default. Pass the bearer token from SSM — see [Security](SECURITY.md) |
 | Endpoint unreachable, no error | ALB ingress is locked to the deployer's IP. Re-run `./deploy.sh` from the same network, or set `ALLOWED_CIDR` |
+| Real-time socket accepts, then no frames | The first session pays a `torch.compile` warm-up — see [Real-time sessions](#real-time-sessions) |
+| Real-time socket closes with 1013 (black canvas) | A previous client left the socket open; it frees on the ALB idle timeout — see [Real-time sessions](#real-time-sessions) |
+| Real-time fps far below the quoted number | Almost always your link, not the GPU — see [Real-time sessions](#real-time-sessions) |
 
 ## GPU capacity
 
@@ -35,12 +38,24 @@ Options, cheapest first:
 The VPC uses `maxAzs: 2`, so AZs beyond those two are unreachable without recreating
 it.
 
-> Instance type is manifest-only today, so working around a shortage means editing
-> `endpoint.yaml`. An `INSTANCE_TYPE` env override would be a useful addition.
+Trying a different type needs no manifest edit — `INSTANCE_TYPE` overrides
+`ec2.instance` for one deploy:
+
+```bash
+INSTANCE_TYPE=g5.2xlarge ./deploy.sh waypoint-1-5
+```
+
+Whether the model still fits is on you: the cartridge READMEs list the shapes each
+one has actually been measured on.
+
+Single-GPU H100 is scarce too: on-demand `p5.4xlarge` was unavailable across us-west-2
+throughout this project's spike, and a Capacity Block was the only way to get one.
+`g7e` (RTX PRO 6000 Blackwell) had no capacity and no Capacity Block offerings at all.
+Plan on a block for anything p5, and treat g7e as unavailable until proven otherwise.
 
 ## Capacity Block Reservations
 
-For predictable `p5.48xlarge` launches, buy a reservation:
+For predictable `p5.48xlarge` or `p5.4xlarge` launches, buy a reservation:
 
 ```bash
 # 1. Find offerings
@@ -87,6 +102,46 @@ manifest.
 | `g5.48xlarge` | 8× A10G | 192 GB | $16 | May OOM at 720p |
 
 Rates are approximate and region-dependent — check current pricing.
+
+## Real-time sessions
+
+Applies to `waypoint-1-5`, `matrix-game-3` and `echo-realtime` — the WebSocket
+cartridges.
+
+**The socket accepts but no frames arrive.** The first session after a container start
+pays a `torch.compile` + CUDA-graph warm-up: **645 s** for `waypoint-1-5` on an H100,
+~27 min on an A10G. `/health` answers long before that finishes, so an early client
+sees a socket that connects and then goes quiet. Watch for the warm-up line in
+`docker logs world-model` before connecting. Mounting `TORCHINDUCTOR_CACHE_DIR` and
+`TRITON_CACHE_DIR` on the host makes the cost one-off across container restarts — that
+is the fix.
+
+`WAYPOINT_WARMUP=0` does **not** help here and makes the symptom worse. `torch.compile`
+is lazy, so all it skips is the pre-emptive `gen_frame` at startup; the first client
+then pays the identical compile inside their own session, with no log line marking when
+it ends. Steady-state throughput is the same either way.
+
+**A second client is refused, for up to about a minute.** These cartridges are
+`max_concurrent: 1`. A client that vanishes without closing cleanly — a closed browser
+tab, a Ctrl-C'd script — leaves the socket open through the ALB, so the endpoint counts
+itself busy until the ALB idle timeout reaps the dead socket. Until then every new
+socket is accepted and then immediately closed with `{"type":"error"}` and code 1013.
+The catalogue UI only logs that to the browser console, so what you see is a black
+canvas that looks like a dead endpoint. Wait it out and retry; do not redeploy.
+
+**Delivered fps is far below the quoted figure.** The quoted numbers are *generation*
+rate, measured on the instance. What a remote client sees is
+`link Mbit/s ÷ (bytes-per-frame × 8 / 1e6)`: a 720p JPEG is ~73 KiB, which makes that
+divisor ~0.60, so 60 fps needs ~36 Mbit/s
+sustained all the way to wherever you are sitting. Check `Measured bitrate` against
+`Link needed for 60 fps` in `./deploy.sh bench` output before concluding anything about
+the GPU, and run the bench on the instance over loopback to measure the model instead
+of the path. Lowering `WAYPOINT_JPEG_QUALITY`, deploying in the player's Region, or
+switching to a video codec all move this number; a bigger GPU does not.
+
+**fp8 silently becomes int8.** `waypoint-1-5` requests `fp8w8a8`, which needs compute
+capability ≥ 8.9. On Ampere (A10G, 8.6) the runner downgrades to `intw8a8` and logs it
+rather than failing — so an unexpectedly low fps on a `g5` is expected, not a fault.
 
 ## Weight staging
 

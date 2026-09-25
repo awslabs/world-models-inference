@@ -1,3 +1,24 @@
-numpy>=1.26.0
-Pillow>=10.0.0
+# Runtime requirements for matrix-game-3.
+#
+# Upstream's own requirements (torch, diffusers, transformers, decord, ...) are
+# installed from their repo in the Dockerfile. Do NOT duplicate them here: pip
+# would re-resolve torch and could replace the CUDA-matched build the base image
+# ships, which is what breaks flash-attn.
+#
+# What must be here is the serving layer. inference/lib/app.py imports FastAPI
+# directly, and neither the NGC base image nor upstream's requirements provide
+# it — the first deployment came up with the model weights staged, the image
+# pulled, and the container dead on `ModuleNotFoundError: No module named
+# 'fastapi'`.
+
+# --- Server (pure Python, no torch dependency) ---
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+pydantic>=2.0
+boto3
 websockets>=12.0
+
+# --- Frame encoding ---
+Pillow>=10.0.0
+numpy>=1.26.0

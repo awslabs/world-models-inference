@@ -67,5 +67,12 @@ blog/*
 security-scans/
 security-scans-*.zip
 
+# Measurement evidence — screenshots, session recordings, benchmark reports.
+# Kept outside the repo (see docs/EVIDENCE.md): it is how we verified our own
+# numbers, not something a consumer of this repo needs, and it is tens of MB of
+# media. `./deploy.sh bench` writes here, so this also stops a benchmark run
+# quietly re-committing it.
+docs/evidence/
+
 # Internal meeting notes — never publish
 .meeting_summary/

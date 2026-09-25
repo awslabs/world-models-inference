@@ -13,6 +13,7 @@ version: 0.1.0
 license: nvidia-internal-research
 license_url: https://huggingface.co/nvidia/Lyra-2.0
 license_restricted: true
+license_note: Internal R&D only — not for production, public deployment, or redistribution.
 
 # Single-GPU 80GB-class model (net peaks ~74GB; verified on 1× H100 80GB). It
 # does NOT fit smaller GPUs — a 46GB L40S OOMs at load, and 24GB (A10G) has no

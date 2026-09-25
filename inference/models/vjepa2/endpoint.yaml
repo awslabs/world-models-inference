@@ -13,3 +13,9 @@ sagemaker:
 
 ec2:
   instance: g5.2xlarge
+
+# --- Weights licence ---------------------------------------------------------
+# Verified 2026-09-21: HF tag apache-2.0. Upstream facebookresearch/vjepa2 is MIT.
+license: Apache-2.0
+license_url: https://huggingface.co/facebook/vjepa2-vitg-fpc64-384
+license_restricted: false

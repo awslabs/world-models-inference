@@ -40,3 +40,21 @@ sagemaker:
   instance: ml.g6e.2xlarge
   scale: { min: 0, max: 1 }
   output: s3://world-model-accelerator-outputs-${AWS_ACCOUNT_ID}/CHANGE-ME/
+
+# --- Weights licence (REQUIRED) ----------------------------------------------
+# Find the real licence before you fill this in. Check the Hugging Face model
+# card AND its API (https://huggingface.co/api/models/<repo>): a `license: other`
+# tag means you must read `license_name`/`license_link`, because "other" is not a
+# licence. The upstream *code* licence is often different from the weights.
+#
+# Set license_restricted: true for anything non-commercial, research-only, or
+# unlicensed — deploy.sh then requires the operator to acknowledge the terms.
+# Record the result in docs/MODEL_LICENSES.md; tests/test_model_licenses.py fails
+# if you don't.
+license: CHANGE-ME
+license_url: https://huggingface.co/CHANGE-ME/your-model
+license_restricted: false
+# Optional: one line naming the ACTUAL restriction, shown by deploy.sh's gate.
+# Only meaningful with license_restricted: true. Omit it and the gate prints a
+# generic "read the license" line instead of asserting something possibly untrue.
+# license_note: Non-commercial use only; derivatives must keep the same license.

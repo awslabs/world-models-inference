@@ -1,15 +1,44 @@
 # Matrix Game 3.0 — real-time interactive world model (Skywork)
-# https://github.com/SkyworkAI/Matrix-Game-3.0 · weights: Skywork/Matrix-Game-3.0
+# https://github.com/SkyworkAI/Matrix-Game (Matrix-Game-3/) · weights: Skywork/Matrix-Game-3.0
+#
+# Interaction: real-time. There is no `sagemaker.output` key on purpose — the
+# framework infers real-time mode from its absence (see cdk manifest.inferMode),
+# and the runner implements stream() rather than returning a file from generate().
+#
+# Compute target: p5.48xlarge (8× H100 80GB). Upstream's reference run is
+# `torchrun --nproc_per_node=8` with `--ulysses_size 8` (see their test.sh), and
+# the 720p/40fps figure in their README is quoted for that shape with int8
+# quantisation, LightVAE and FlashAttention 3.
+#
+# FlashAttention 3 is Hopper-only. The runner falls back to FA2 and then to SDPA
+# (`--fa_version` accepts 3, 2 or 0 upstream), so the cartridge will run on
+# Ampere at lower throughput, but H100 is the supported target.
+#
+# Weights are ~57GB: the distilled 5B DiT plus the T5 encoder and VAE.
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/matrix-game-3/
 version: 0.1.0
 
+# torch 2.10 + Python 3.12 + a FlashAttention 3 wheel. The shared
+# inference/Dockerfile.default is pinned to torch 2.4 for the LingBot lineage,
+# which cannot load this model's dependencies, so this cartridge ships its own.
+base_image: nvcr.io/nvidia/pytorch:25.09-py3
+
 sagemaker:
   instance: ml.p5.48xlarge
-  scale: { min: 1, max: 4 }
+  scale: { min: 0, max: 2 }
+  max_concurrent: 1   # stateful session — one player per container
 
 hf:
   - { repo: Skywork/Matrix-Game-3.0, subdir: "" }
 
 ec2:
-  instance: g5.2xlarge
+  instance: p5.48xlarge
+  volume_size: 500
+
+# --- Weights licence ---------------------------------------------------------
+# Verified 2026-09-21: HF tag apache-2.0. Upstream SkyworkAI/Matrix-Game is MIT
+# and is cloned into the image (pinned 71c3cd7), not vendored here.
+license: Apache-2.0
+license_url: https://huggingface.co/Skywork/Matrix-Game-3.0
+license_restricted: false

@@ -38,6 +38,40 @@ CMD_SHUTDOWN = "shutdown"
 # =============================================================================
 
 
+# Dedicated process group for framework control messages.
+#
+# Commands must NOT share the default process group with the model. Model code
+# runs its own collectives on the default group — Matrix Game 3, for instance,
+# calls dist.broadcast_object_list to fan actions out to every rank — and if a
+# follower's command broadcast lands on the same group it receives the model's
+# payload instead of a command dict. That surfaces as:
+#
+#   RuntimeError: Boolean value of Tensor with more than one value is ambiguous
+#
+# followed by an NCCL collective timeout on rank 0 as the ranks lose lockstep.
+# A separate gloo group keeps control traffic on the CPU and out of the model's
+# way. gloo also means a command broadcast cannot block behind queued GPU work.
+_command_group = None
+
+
+def init_command_channel() -> None:
+    """Create the control-message process group. Collective: call on every rank.
+
+    Must be called at the same point on all ranks, after the default group is
+    initialised and before any command is sent.
+    """
+    global _command_group
+    if _command_group is not None or not dist.is_initialized():
+        return
+    try:
+        _command_group = dist.new_group(backend="gloo")
+        logger.info("Command channel ready (gloo, separate from the model group).")
+    except Exception as exc:
+        # Better to run on the default group than to refuse to boot; single-model
+        # deployments that never collide will still work.
+        logger.warning("Could not create a separate command group: %s", exc)
+
+
 def broadcast_command(command: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Broadcast a command dict from rank 0 to all ranks.
 
@@ -48,8 +82,33 @@ def broadcast_command(command: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return command or {"cmd": CMD_PING}
 
     payload: List[Optional[Dict[str, Any]]] = [command if dist.get_rank() == 0 else None]
-    dist.broadcast_object_list(payload, src=0)
-    return payload[0] or {"cmd": CMD_PING}
+    dist.broadcast_object_list(payload, src=0, group=_command_group)
+    received = payload[0]
+    # Guard against a payload that is not a command dict: with a shared group a
+    # model tensor can arrive here, and `payload[0] or ...` on a multi-element
+    # tensor raises instead of falling through.
+    if isinstance(received, dict):
+        return received
+    if received is not None:
+        logger.warning("Discarding non-command payload on the command channel: %r",
+                       type(received))
+    return {"cmd": CMD_PING}
+
+
+def broadcast_object(obj: Any) -> Any:
+    """Broadcast one picklable CPU object from rank 0 on the command channel.
+
+    For runners whose ranks must advance in lockstep (Matrix Game 3 broadcasts
+    the client action at the top of every chunk). Uses the gloo command group,
+    so the payload never becomes a CUDA tensor and never interleaves with the
+    model's own NCCL collectives. Rank 0 passes the object; other ranks pass
+    anything (it is ignored) and receive rank 0's value.
+    """
+    if not dist.is_initialized():
+        return obj
+    payload: List[Any] = [obj if dist.get_rank() == 0 else None]
+    dist.broadcast_object_list(payload, src=0, group=_command_group)
+    return payload[0]
 
 
 def rank_zero() -> bool:

@@ -23,6 +23,9 @@ if str(INFERENCE_DIR) not in sys.path:
 
 from fastapi import HTTPException  # noqa: E402
 
+import cognito_testing  # noqa: E402
+
+from lib.cognito import AuthMisconfigured  # noqa: E402
 from lib.security import (  # noqa: E402
     RateLimitMiddleware,
     SecurityConfig,
@@ -37,27 +40,62 @@ from lib.security import (  # noqa: E402
 # --------------------------------------------------------------------------
 
 
-def test_auth_disabled_when_token_unset(monkeypatch):
-    monkeypatch.delenv("WORLD_MODEL_API_TOKEN", raising=False)
-    assert SecurityConfig().auth_enabled is False
+def test_auth_is_required_by_default(monkeypatch):
+    """The headline behaviour change: no config means no server, not no auth.
+
+    Previously an unset token silently disabled authentication and logged a
+    warning, so a deploy that missed one env var produced an open GPU endpoint.
+    """
+    cognito_testing.disable_auth(monkeypatch)
+    monkeypatch.delenv("WORLD_MODEL_AUTH_MODE", raising=False)
+    with pytest.raises(AuthMisconfigured):
+        SecurityConfig()
 
 
-def test_auth_enabled_when_token_set(monkeypatch):
-    monkeypatch.setenv("WORLD_MODEL_API_TOKEN", "secret")
-    assert SecurityConfig().auth_enabled is True
+def test_auth_can_be_disabled_only_explicitly(monkeypatch):
+    cognito_testing.disable_auth(monkeypatch)
+    cfg = SecurityConfig()
+    assert cfg.auth_enabled is False
+    assert cfg.verifier is None
+
+
+def test_unknown_auth_mode_is_fatal(monkeypatch):
+    """A typo must not fall back to something permissive."""
+    monkeypatch.setenv("WORLD_MODEL_AUTH_MODE", "off")
+    with pytest.raises(AuthMisconfigured, match="not recognised"):
+        SecurityConfig()
+
+
+def test_cognito_mode_builds_a_verifier(monkeypatch):
+    cognito_testing.use_cognito(monkeypatch)
+    cfg = SecurityConfig()
+    assert cfg.auth_enabled is True
+    assert cfg.verifier is not None
+    assert cfg.cognito.issuer == cognito_testing.ISSUER
+
+
+def test_partial_cognito_config_is_fatal(monkeypatch):
+    """Half-configured auth is the dangerous state; refuse to start."""
+    cognito_testing.use_cognito(monkeypatch)
+    monkeypatch.delenv("WORLD_MODEL_COGNITO_CLIENT_IDS", raising=False)
+    with pytest.raises(AuthMisconfigured, match="CLIENT_IDS"):
+        SecurityConfig()
 
 
 def test_cors_denies_by_default(monkeypatch):
+    cognito_testing.disable_auth(monkeypatch)
     monkeypatch.delenv("WORLD_MODEL_ALLOWED_ORIGINS", raising=False)
     assert SecurityConfig().allowed_origins == []
 
 
 def test_cors_parses_allowlist(monkeypatch):
+    cognito_testing.disable_auth(monkeypatch)
     monkeypatch.setenv("WORLD_MODEL_ALLOWED_ORIGINS", "https://a.example, https://b.example")
     assert SecurityConfig().allowed_origins == ["https://a.example", "https://b.example"]
 
 
 def test_rate_limit_default_and_override(monkeypatch):
+    cognito_testing.disable_auth(monkeypatch)
     monkeypatch.delenv("WORLD_MODEL_RATE_LIMIT", raising=False)
     assert SecurityConfig().rate_limit == 60
     monkeypatch.setenv("WORLD_MODEL_RATE_LIMIT", "5")
@@ -83,18 +121,34 @@ def test_extract_token_bare_header_and_query():
 
 
 def test_token_valid_disabled_allows_anything(monkeypatch):
-    monkeypatch.delenv("WORLD_MODEL_API_TOKEN", raising=False)
+    cognito_testing.disable_auth(monkeypatch)
     cfg = SecurityConfig()
     assert token_valid(cfg, None) is True
     assert token_valid(cfg, "whatever") is True
 
 
-def test_token_valid_enforced_when_enabled(monkeypatch):
-    monkeypatch.setenv("WORLD_MODEL_API_TOKEN", "s3cr3t")
+def test_token_valid_accepts_a_real_access_token(monkeypatch):
+    cognito_testing.use_cognito(monkeypatch)
+    assert token_valid(SecurityConfig(), cognito_testing.make_access_token()) is True
+
+
+def test_token_valid_rejects_bad_tokens(monkeypatch):
+    cognito_testing.use_cognito(monkeypatch)
     cfg = SecurityConfig()
-    assert token_valid(cfg, "s3cr3t") is True
-    assert token_valid(cfg, "wrong") is False
     assert token_valid(cfg, None) is False
+    assert token_valid(cfg, "wrong") is False
+    assert token_valid(cfg, cognito_testing.make_access_token(token_use="id")) is False
+    assert token_valid(cfg, cognito_testing.make_access_token(scope="openid")) is False
+    assert token_valid(cfg, cognito_testing.make_access_token(expires_in=-60)) is False
+
+
+def test_token_valid_logs_the_reason_rather_than_returning_it(monkeypatch, caplog):
+    """Rejection detail belongs in our logs, not anywhere a client can read it."""
+    cognito_testing.use_cognito(monkeypatch)
+    cfg = SecurityConfig()
+    with caplog.at_level("INFO"):
+        assert token_valid(cfg, cognito_testing.make_access_token(scope="openid")) is False
+    assert any("scope" in r.getMessage() for r in caplog.records)
 
 
 # --------------------------------------------------------------------------
@@ -143,6 +197,7 @@ def _client_key(xff=None, peer="10.0.0.1"):
 
 
 def test_client_key_uses_last_xff_hop(monkeypatch):
+    cognito_testing.disable_auth(monkeypatch)
     monkeypatch.delenv("WORLD_MODEL_RATE_LIMIT", raising=False)
     # ALB appends the real peer as the rightmost hop; a client-forged leading
     # entry must NOT become the key (that would let callers dodge the limit).
@@ -153,6 +208,7 @@ def test_client_key_uses_last_xff_hop(monkeypatch):
 
 
 def test_client_key_falls_back_to_peer_without_xff(monkeypatch):
+    cognito_testing.disable_auth(monkeypatch)
     monkeypatch.delenv("WORLD_MODEL_RATE_LIMIT", raising=False)
     assert _client_key(xff=None, peer="198.51.100.4") == "198.51.100.4"
     assert _client_key(xff="   ", peer="198.51.100.4") == "198.51.100.4"

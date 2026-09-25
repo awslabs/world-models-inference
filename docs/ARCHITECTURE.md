@@ -2,7 +2,7 @@
 
 ![World Model Accelerator architecture on AWS](diagrams/architecture-v1-cartridge-platform.png)
 
-The editable source is [`diagrams/architecture-v1-cartridge-platform.drawio`](diagrams/architecture-v1-cartridge-platform.drawio)
+The PNG above is rendered from [`diagrams/architecture-v1-cartridge-platform.svg`](diagrams/architecture-v1-cartridge-platform.svg); [`diagrams/architecture-v1-cartridge-platform.drawio`](diagrams/architecture-v1-cartridge-platform.drawio) is the draw.io editable source
 (open at [app.diagrams.net](https://app.diagrams.net) or with the VS Code draw.io
 extension).
 
@@ -63,8 +63,8 @@ At boot the instance:
 2. authenticates to ECR and `docker pull`s its image
 3. symlinks `/opt/checkpoints` onto instance NVMe when present
 4. `aws s3 sync`s weights from the artifacts bucket over the **S3 gateway endpoint**
-5. reads the shared API token from SSM Parameter Store (`--with-decryption`) — the
-   secret never enters the CloudFormation template
+5. receives its Cognito settings (user pool ID, client IDs, scope — all non-secret)
+   as container env; the app verifies pool-issued access tokens against the pool's JWKS
 6. `docker run --gpus all --net host --ipc host -v $CKPT_DIR:/opt/ml/model`
 
 ## Run
@@ -118,15 +118,17 @@ Middleware order is headers → CORS → rate limit → auth. See
 ## Elsewhere
 
 The **catalogue UI** runs locally: `./deploy.sh ui` starts vite on `:3000` and
-proxies the API paths to the ALB, injecting the bearer token **server-side**. The
+proxies the API paths to the ALB, injecting a Cognito access token **server-side**. The
 browser only ever talks to localhost, so there is no CORS problem and the token
 never reaches the JS bundle. There is no hosted UI — nothing serves the SPA from
 AWS.
 
 Passing `sagemaker` as the deploy target provisions a SageMaker endpoint from the
 same image and weights instead of EC2. Async models get an
-`asyncInferenceConfig` writing to the outputs bucket; the token is injected via a
-`{{resolve:ssm-secure:...}}` dynamic reference.
+`asyncInferenceConfig` writing to the outputs bucket. SageMaker endpoints are
+IAM-authenticated (`sagemaker:InvokeEndpoint`), so the Cognito check is defence in
+depth there; the same non-secret `WORLD_MODEL_COGNITO_*` settings are passed as
+container environment.
 
 ## Project layout
 

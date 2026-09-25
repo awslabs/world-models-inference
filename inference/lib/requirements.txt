@@ -1,0 +1,30 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Serving deps every cartridge needs, in one place.
+#
+# These used to be duplicated in each cartridge's Dockerfile, which drifted:
+# lyra-2 installed bare `uvicorn` instead of `uvicorn[standard]`, cosmos3-nano
+# omitted `websockets`, and matrix-game-3 had no serving-deps line at all. That
+# duplication is also how an image once shipped WITHOUT the security library and
+# kept serving with auth unenforced (PCSR D484282450, round 3). A missing auth
+# dependency must break the build, not the security posture.
+#
+# Every Dockerfile installs this file. Cartridge-specific deps stay in
+# inference/models/<id>/requirements.txt.
+
+# Shared FastAPI serving layer (lib/app.py). Form/File routes need
+# python-multipart; the real-time path needs websockets.
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+
+# Video encode for async cartridges that return MP4.
+imageio
+imageio-ffmpeg
+
+# Cognito access-token verification (lib/cognito.py). The [crypto] extra pulls
+# `cryptography`, which PyJWT needs for the RS256 signatures Cognito issues —
+# without it every token verification fails closed at startup.
+pyjwt[crypto]>=2.8

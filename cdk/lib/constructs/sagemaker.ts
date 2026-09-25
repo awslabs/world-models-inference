@@ -16,7 +16,10 @@ export interface WorldModelEndpointProps {
   readonly maxConcurrent: number;
   readonly asyncConfig?: { output: string };
   /** SSM SecureString name holding the shared API token (R1). */
-  readonly apiTokenParam?: string;
+  readonly cognitoUserPoolId?: string;
+  readonly cognitoClientIds?: string;
+  readonly cognitoScope?: string;
+  readonly authMode?: string;
   /** CORS allowlist forwarded to the container (R1). */
   readonly allowedOrigins?: string;
   /** Per-IP req/min on inference routes (R1). */
@@ -77,8 +80,21 @@ export class WorldModelEndpoint extends Construct {
     // dynamic reference, so it is resolved at deploy time and never stored in
     // the template. Origins/rate-limit are non-secret plain values.
     const containerEnv: Record<string, string> = {};
-    if (props.apiTokenParam) {
-      containerEnv.WORLD_MODEL_API_TOKEN = `{{resolve:ssm-secure:${props.apiTokenParam}}}`;
+    // SageMaker endpoints are IAM-authenticated: sagemaker:InvokeEndpoint is the
+    // authorisation boundary, so the in-container check is defence in depth here
+    // rather than the only control. Still wired for consistency, and because the
+    // same image serves the EC2/ALB path where it IS the only control.
+    if (props.authMode) {
+      containerEnv.WORLD_MODEL_AUTH_MODE = props.authMode;
+    }
+    if (props.cognitoUserPoolId) {
+      containerEnv.WORLD_MODEL_COGNITO_USER_POOL_ID = props.cognitoUserPoolId;
+    }
+    if (props.cognitoClientIds) {
+      containerEnv.WORLD_MODEL_COGNITO_CLIENT_IDS = props.cognitoClientIds;
+    }
+    if (props.cognitoScope) {
+      containerEnv.WORLD_MODEL_COGNITO_SCOPE = props.cognitoScope;
     }
     if (props.allowedOrigins) {
       containerEnv.WORLD_MODEL_ALLOWED_ORIGINS = props.allowedOrigins;

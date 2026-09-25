@@ -3,6 +3,7 @@
 
 import * as cdk from 'aws-cdk-lib';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -75,6 +76,17 @@ export class SharedStack extends cdk.Stack {
 
     const vpc = new ec2.Vpc(this, 'Vpc', {
       vpcName: 'world-model-vpc',
+      // GPU capacity is per-AZ, so more AZs means more chances of a p5 launch
+      // succeeding: we hit InsufficientInstanceCapacity in both 2a and 2b while
+      // AWS reported capacity in 2c and 2d, with no subnet there to use.
+      //
+      // Raising this on an existing VPC does NOT work: CDK re-slices the /16
+      // from the base, so the new public subnets are handed 10.0.2.0/24 and
+      // 10.0.3.0/24, which the current private subnets already own, and the
+      // update fails with "CIDR conflicts with another subnet". Widening the AZ
+      // span needs a fresh VPC (new CIDR or a rebuilt foundation), so it is a
+      // deliberate migration rather than a config tweak. Reserved capacity is
+      // the better answer for p5 in any case.
       maxAzs: 2,
       natGateways: 1,
       subnetConfiguration: [
@@ -146,15 +158,11 @@ export class SharedStack extends cdk.Stack {
       resources: bucketArns,
     }));
 
-    // Read the shared inference API token at boot (R1). Scoped to the single
-    // SecureString parameter; the instance injects it into the container env.
-    ec2Role.addToPolicy(new iam.PolicyStatement({
-      sid: 'ReadApiToken',
-      actions: ['ssm:GetParameter'],
-      resources: [
-        `arn:aws:ssm:${this.region}:${this.account}:parameter/world-model/security/api-token`,
-      ],
-    }));
+    // No ssm:GetParameter grant here any more. The instance used to read a shared
+    // SecureString API token at boot; with Cognito it receives only public
+    // identifiers (pool ID, client IDs, scope) in user data and verifies tokens
+    // against the pool's published JWKS. One fewer permission, and no secret on
+    // the instance to read or leak.
 
     const ec2Profile = new iam.CfnInstanceProfile(this, 'EC2Profile', {
       instanceProfileName: `WorldModelEC2Profile-${this.region}`,
@@ -257,6 +265,105 @@ export class SharedStack extends cdk.Stack {
       buildSpec: defaultSpec,
     });
 
+    // --- Cognito (authentication) ---
+    //
+    // The inference API used to authenticate with a shared static bearer token
+    // that deploy.sh generated into SSM and the app string-compared. That is a
+    // bespoke credential scheme — "a Cognito alternative" in AWS security-review
+    // terms — which makes a reusable solution ineligible for an Enhanced DSR and
+    // forces a full AppSec review. It was also a single long-lived secret shared
+    // by every caller, with no expiry and no way to revoke one client.
+    //
+    // This pool replaces it. The app verifies pool-issued access tokens
+    // (inference/lib/cognito.py) and owns no credential scheme of its own.
+    //
+    // It lives in the foundation stack, not per-model, so every cartridge shares
+    // one identity boundary and adding a cartridge does not mint a new pool.
+    const userPool = new cognito.UserPool(this, 'UserPool', {
+      userPoolName: 'world-model-inference',
+      selfSignUpEnabled: false, // operators are invited; this is not a public app
+      signInAliases: { email: true },
+      passwordPolicy: {
+        minLength: 12,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      // RETAIN: destroying the pool would delete every operator account and
+      // silently break running deployments that still hold its tokens.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      // Threat protection in audit mode: record risk signals (impossible travel,
+      // credential stuffing) without blocking a booth demo on a false positive.
+      standardThreatProtectionMode: cognito.StandardThreatProtectionMode.AUDIT_ONLY,
+    });
+
+    // A resource server gives us a scope to authorise on, so a token proves
+    // "may invoke inference" rather than merely "signed in somewhere".
+    const resourceServer = userPool.addResourceServer('ResourceServer', {
+      identifier: 'world-model',
+      userPoolResourceServerName: 'World Model Inference API',
+      scopes: [
+        new cognito.ResourceServerScope({
+          scopeName: 'invoke',
+          scopeDescription: 'Run inference against a deployed world model',
+        }),
+      ],
+    });
+    const invokeScope = cognito.OAuthScope.resourceServer(resourceServer, {
+      scopeName: 'invoke',
+      scopeDescription: 'Run inference against a deployed world model',
+    });
+
+    // A Hosted UI domain is required for the authorization-code and
+    // client-credentials flows below. The prefix must be globally unique, so it
+    // is account/region qualified.
+    const domainPrefix = `world-model-${this.account}-${this.region}`;
+    const userPoolDomain = userPool.addDomain('UserPoolDomain', {
+      cognitoDomain: { domainPrefix },
+    });
+
+    // Browser client: authorization code + PKCE, no client secret. A public
+    // client must never hold a secret — it ships to the browser.
+    const callbackUrls = (this.node.tryGetContext('callbackUrls') as string | undefined)
+      ?.split(',')
+      .map(u => u.trim())
+      .filter(Boolean) ?? ['http://localhost:3000/'];
+    const browserClient = userPool.addClient('BrowserClient', {
+      userPoolClientName: 'world-model-browser',
+      generateSecret: false,
+      authFlows: { userSrp: true },
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [cognito.OAuthScope.OPENID, invokeScope],
+        callbackUrls,
+        logoutUrls: callbackUrls,
+      },
+      // Short-lived by design. The token travels in a WebSocket query string on
+      // the real-time path, which lands in ALB access logs; an hour of exposure
+      // is a different proposition from the previous never-expiring secret.
+      accessTokenValidity: cdk.Duration.hours(1),
+      idTokenValidity: cdk.Duration.hours(1),
+      refreshTokenValidity: cdk.Duration.days(1),
+      preventUserExistenceErrors: true,
+      enableTokenRevocation: true,
+    });
+
+    // Machine client: client credentials, no user involved. This is what
+    // `deploy.sh bench` and CI use, and it is why automation no longer needs a
+    // shared human-held secret.
+    const machineClient = userPool.addClient('MachineClient', {
+      userPoolClientName: 'world-model-machine',
+      generateSecret: true,
+      oAuth: {
+        flows: { clientCredentials: true },
+        scopes: [invokeScope],
+      },
+      accessTokenValidity: cdk.Duration.hours(1),
+      enableTokenRevocation: true,
+    });
+
     // --- SSM Parameters (foundation registry) ---
 
     new ssm.StringParameter(this, 'ParamVpcId', {
@@ -317,6 +424,40 @@ export class SharedStack extends cdk.Stack {
     new ssm.StringParameter(this, 'ParamImageProject', {
       parameterName: '/world-model/foundation/image-project',
       stringValue: imageProject.projectName,
+    });
+
+    // Cognito registry. deploy.sh reads these and passes them to the container as
+    // WORLD_MODEL_COGNITO_* env vars. The machine client's SECRET is deliberately
+    // absent: it is readable from the Cognito API by an authorised caller and must
+    // not be copied into a plaintext SSM parameter.
+    new ssm.StringParameter(this, 'ParamUserPoolId', {
+      parameterName: '/world-model/foundation/cognito-user-pool-id',
+      stringValue: userPool.userPoolId,
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoClientIds', {
+      parameterName: '/world-model/foundation/cognito-client-ids',
+      stringValue: `${browserClient.userPoolClientId},${machineClient.userPoolClientId}`,
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoBrowserClientId', {
+      parameterName: '/world-model/foundation/cognito-browser-client-id',
+      stringValue: browserClient.userPoolClientId,
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoMachineClientId', {
+      parameterName: '/world-model/foundation/cognito-machine-client-id',
+      stringValue: machineClient.userPoolClientId,
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoScope', {
+      parameterName: '/world-model/foundation/cognito-scope',
+      stringValue: 'world-model/invoke',
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoDomain', {
+      parameterName: '/world-model/foundation/cognito-domain',
+      stringValue: userPoolDomain.baseUrl(),
     });
   }
 }

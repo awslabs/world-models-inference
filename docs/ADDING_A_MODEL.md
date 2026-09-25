@@ -89,10 +89,37 @@ python scripts/stage-weights.py my-model --source hf:my-org/my-model
 Gated Hugging Face repos need `HF_TOKEN` set. Staging is one-off — later launches
 sync from S3.
 
-## 5. Optional: surface it in the UI
+## 5. Document it and surface it in the UI
 
-Add a row to the table in [Endpoints](ENDPOINTS.md) and a card in
-`frontend/src/data/cartridges.ts`.
+Three places, and `tests/test_cartridge_parity.py` enforces most of it, so a stale
+page cannot merge. What it actually checks: all three exist for every cartridge; the
+card's and the table's `instance` both match `endpoint.yaml`; the card's `deploy`
+targets are a subset of what the manifest declares; `fps > 0` exactly when the
+manifest describes a real-time endpoint; the `restricted` flag matches
+`license_restricted`; and the table's **Wired?** marker agrees with the card's
+`build`. What it does *not* check is prose — no test can tell whether your measured
+numbers are real, so the rest of this section is on you.
+
+1. **`inference/models/my-model/README.md`** — the per-model page, and the one thing a
+   reader looks for first. What it must answer: upstream link and licence; which
+   weights to stage and how (the `hf:` block is documentation — nothing reads it, so
+   spell out the `stage-weights.py` invocations); the exact `./deploy.sh` commands;
+   **what hardware, with the measured number on each shape you actually ran** and an
+   explicit note on which shapes are untested; what to invoke (routes, and the session
+   protocol if real-time); tunable environment variables; and caveats a first-time user
+   will otherwise hit. `waypoint-1-5` and `matrix-game-3` are the worked examples.
+2. **A row in [Endpoints](ENDPOINTS.md)** — the models table plus a short per-model
+   section linking to the README above.
+3. **A card in `frontend/src/data/cartridges.ts`** — `instance` and `deploy` must match
+   the manifest; `fps > 0` only for real-time; `build: 'wired'` only once you have
+   invoked it end to end. Quote *measured* fps, and say so in `notes` when a number is
+   a design target rather than a measurement.
+
+Write some tests, too. A cartridge can be covered offline — stub the model library and
+torch — which is worth doing because the alternative is discovering a wire-format bug
+on a $8/hr instance. `tests/test_waypoint_1_5_session.py` drives a whole WebSocket
+session against the real route and the real `stream()` with a fake engine, and
+`tests/test_waypoint_1_5.py` pins the manifest and every action wire format.
 
 ---
 

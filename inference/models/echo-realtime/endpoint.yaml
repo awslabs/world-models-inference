@@ -10,3 +10,9 @@ sagemaker:
 
 ec2:
   instance: g5.12xlarge
+
+# --- Weights licence ---------------------------------------------------------
+# No third-party weights: this is our own test fixture, Apache-2.0 like the repo.
+license: Apache-2.0
+license_url: https://github.com/awslabs/world-models-inference
+license_restricted: false

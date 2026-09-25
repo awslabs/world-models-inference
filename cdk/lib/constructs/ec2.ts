@@ -21,7 +21,21 @@ export interface Ec2InferenceProps {
   readonly roleName: string;
   readonly imageUri: string;
   readonly modelDataS3Uri: string;
+  /**
+   * Capacity Block (or on-demand capacity reservation) to launch into. Set this
+   * and the launch template targets the reservation explicitly and, for a
+   * Capacity Block, sets the required `capacity-block` market type. Without
+   * both, the ASG launches ordinary on-demand capacity and a paid-for block
+   * sits idle — reserved capacity is never used implicitly.
+   */
   readonly capacityReservationId?: string;
+  /**
+   * Subnets to launch into, overriding `subnetIds`. A Capacity Block lives in
+   * one Availability Zone, so the ASG has to be pinned to the private subnet in
+   * that AZ; left to its own devices it will pick either AZ and fail half the
+   * time.
+   */
+  readonly capacitySubnetIds?: string;
   /**
    * ACM certificate ARN. When set, the ALB serves HTTPS on 443 and redirects
    * HTTP:80 → HTTPS:443 (M1). When unset, it falls back to plain HTTP:80 for
@@ -29,11 +43,23 @@ export interface Ec2InferenceProps {
    */
   readonly certificateArn?: string;
   /**
-   * SSM SecureString parameter name holding the shared API token (R1). The
-   * instance reads the decrypted value at boot and passes it to the container
-   * as WORLD_MODEL_API_TOKEN, so the secret never lands in the CFN template.
+   * Cognito settings passed to the container as WORLD_MODEL_COGNITO_*.
+   *
+   * These replace the shared bearer token the instance used to fetch from SSM.
+   * None of them is secret — a user pool ID, app client IDs and a scope name are
+   * all public identifiers — so unlike the old token they can be baked straight
+   * into user data with nothing to decrypt at boot.
    */
-  readonly apiTokenParam?: string;
+  readonly cognitoUserPoolId?: string;
+  readonly cognitoClientIds?: string;
+  readonly cognitoScope?: string;
+  /**
+   * Set to 'disabled' to run the endpoint unauthenticated. The container refuses
+   * to start if this is unset AND no user pool is given, which is deliberate: a
+   * deploy that forgets the Cognito wiring must fail, not quietly serve an open
+   * GPU endpoint.
+   */
+  readonly authMode?: string;
   /** CORS allowlist → WORLD_MODEL_ALLOWED_ORIGINS on the container (R1). */
   readonly allowedOrigins?: string;
   /** Per-IP req/min → WORLD_MODEL_RATE_LIMIT on the container (R1). */
@@ -87,15 +113,21 @@ export class Ec2Inference extends Construct {
       'mkdir -p "$CKPT_DIR"',
       `aws s3 sync "${props.modelDataS3Uri}" "$CKPT_DIR/" --region ${region} || true`,
       '',
-      // Security env (R1). The token is fetched from SSM (SecureString) at boot
-      // so the plaintext secret never appears in the CFN template or user data.
-      // Origins and rate limit are non-secret and baked in directly.
+      // Security env. Cognito identifiers, CORS origins and the rate limit are
+      // all non-secret, so they are baked in directly — there is no longer a
+      // secret to fetch from SSM at boot.
       'SEC_ENV=()',
-      ...(props.apiTokenParam
-        ? [
-            `API_TOKEN=$(aws ssm get-parameter --name "${props.apiTokenParam}" --with-decryption --query Parameter.Value --output text --region ${region} 2>/dev/null || true)`,
-            'if [ -n "$API_TOKEN" ]; then SEC_ENV+=(-e "WORLD_MODEL_API_TOKEN=$API_TOKEN"); fi',
-          ]
+      ...(props.authMode
+        ? [`SEC_ENV+=(-e "WORLD_MODEL_AUTH_MODE=${props.authMode}")`]
+        : []),
+      ...(props.cognitoUserPoolId
+        ? [`SEC_ENV+=(-e "WORLD_MODEL_COGNITO_USER_POOL_ID=${props.cognitoUserPoolId}")`]
+        : []),
+      ...(props.cognitoClientIds
+        ? [`SEC_ENV+=(-e "WORLD_MODEL_COGNITO_CLIENT_IDS=${props.cognitoClientIds}")`]
+        : []),
+      ...(props.cognitoScope
+        ? [`SEC_ENV+=(-e "WORLD_MODEL_COGNITO_SCOPE=${props.cognitoScope}")`]
         : []),
       ...(props.allowedOrigins
         ? [`SEC_ENV+=(-e "WORLD_MODEL_ALLOWED_ORIGINS=${props.allowedOrigins}")`]
@@ -127,16 +159,43 @@ export class Ec2Inference extends Construct {
       }],
     });
 
+    // Target reserved capacity explicitly. The L2 LaunchTemplate does not
+    // surface either property, hence the overrides on the underlying resource.
+    if (props.capacityReservationId) {
+      const cfnLaunchTemplate = launchTemplate.node.defaultChild as ec2.CfnLaunchTemplate;
+      cfnLaunchTemplate.addPropertyOverride(
+        'LaunchTemplateData.CapacityReservationSpecification',
+        {
+          CapacityReservationTarget: {
+            CapacityReservationId: props.capacityReservationId,
+          },
+        },
+      );
+      // P5 Capacity Blocks reject a launch that does not declare this market
+      // type; it is not the same as an ordinary on-demand reservation.
+      cfnLaunchTemplate.addPropertyOverride('LaunchTemplateData.InstanceMarketOptions', {
+        MarketType: 'capacity-block',
+      });
+    }
+
+    // minSize 0 and no desiredCapacity ON PURPOSE: CloudFormation waits for the
+    // group to reach the template's min/desired before marking any ASG mutation
+    // complete, so with min 1 a GPU capacity shortage (p5
+    // InsufficientInstanceCapacity is routine) turns every deploy — even a pure
+    // launch-template fix — into a ~40-minute hang followed by a rollback that
+    // can resurrect the very launch template the deploy was replacing. With a
+    // template floor of 0, deploys complete immediately; deploy.sh sets the
+    // group's desired capacity to 1 out-of-band after the stack lands, and the
+    // ASG keeps retrying the launch in the background until capacity appears.
     const asg = new autoscaling.CfnAutoScalingGroup(this, 'ASG', {
       autoScalingGroupName: `world-model-${props.deploymentName}`,
-      minSize: '1',
+      minSize: '0',
       maxSize: '1',
-      desiredCapacity: '1',
       launchTemplate: {
         launchTemplateId: launchTemplate.launchTemplateId!,
         version: launchTemplate.latestVersionNumber,
       },
-      vpcZoneIdentifier: cdk.Fn.split(',', props.subnetIds),
+      vpcZoneIdentifier: cdk.Fn.split(',', props.capacitySubnetIds || props.subnetIds),
       targetGroupArns: [],
       tags: [
         { key: 'Name', value: `world-model-${props.deploymentName}`, propagateAtLaunch: true },

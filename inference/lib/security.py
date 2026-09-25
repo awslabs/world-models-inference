@@ -6,13 +6,29 @@
 Everything here is env-var driven so the same container image runs locked
 down in production and open for local/demo use:
 
-  WORLD_MODEL_API_TOKEN        Shared bearer token. If set, every request
-                               (and every WebSocket) must present it via
-                               ``Authorization: Bearer <token>`` (the
-                               ``Bearer`` prefix is optional) or, for
-                               WebSockets, a ``?token=<token>`` query param.
-                               If UNSET, auth is DISABLED and a loud warning
-                               is logged at startup.
+  WORLD_MODEL_AUTH_MODE        ``cognito`` (default) or ``disabled``.
+
+                               Authentication is REQUIRED by default. If the
+                               Cognito settings below are missing the server
+                               REFUSES TO START rather than serving an
+                               unauthenticated GPU endpoint — the previous
+                               behaviour, where an unset token silently disabled
+                               auth, meant a deploy that forgot one env var
+                               produced an open endpoint with only a log line to
+                               say so.
+
+                               ``disabled`` is an explicit, loudly-logged opt-out
+                               for local development. Never use it on a network
+                               anyone else can reach.
+
+                               Callers present a Cognito **access token** as
+                               ``Authorization: Bearer <token>``, or for
+                               WebSockets a ``?token=`` query param. See
+                               ``lib/cognito.py`` for what is verified and why it
+                               is an access token rather than an ID token.
+
+  WORLD_MODEL_COGNITO_*        User pool, allowed app client IDs and required
+                               scope. Documented in ``lib/cognito.py``.
 
   WORLD_MODEL_ALLOWED_ORIGINS  Comma-separated CORS allowlist (e.g.
                                ``https://d123.cloudfront.net``). If UNSET, no
@@ -32,7 +48,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import secrets
 import threading
 import time
 from pathlib import Path
@@ -42,6 +57,8 @@ from fastapi import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+
+from lib.cognito import AuthError, AuthMisconfigured, CognitoConfig, TokenVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +80,31 @@ _DEFAULT_RATE_LIMIT = 60
 
 
 class SecurityConfig:
-    """Snapshot of security-relevant env vars, resolved once at startup."""
+    """Snapshot of security-relevant env vars, resolved once at startup.
+
+    Constructing this raises ``AuthMisconfigured`` when auth is required but not
+    configured. That is deliberate: it turns a missing env var into a failed
+    deploy instead of an open endpoint.
+    """
 
     def __init__(self) -> None:
-        self.api_token: Optional[str] = os.environ.get("WORLD_MODEL_API_TOKEN") or None
+        mode = (os.environ.get("WORLD_MODEL_AUTH_MODE") or "cognito").strip().lower()
+        if mode not in {"cognito", "disabled"}:
+            raise AuthMisconfigured(
+                f"WORLD_MODEL_AUTH_MODE={mode!r} is not recognised. Use 'cognito' "
+                "(default) or 'disabled'."
+            )
+        self.auth_mode: str = mode
+        self.cognito: Optional[CognitoConfig] = None
+        self._verifier: Optional[TokenVerifier] = None
+
+        if mode == "cognito":
+            # Both of these raise rather than degrade. from_env() reports which
+            # setting is missing; TokenVerifier() fails if PyJWT is absent, which
+            # is how a Dockerfile that skips lib/requirements.txt gets caught.
+            self.cognito = CognitoConfig.from_env()
+            self._verifier = TokenVerifier(self.cognito)
+
         self.allowed_origins: list[str] = _parse_origins(
             os.environ.get("WORLD_MODEL_ALLOWED_ORIGINS", "")
         )
@@ -76,16 +114,20 @@ class SecurityConfig:
 
     @property
     def auth_enabled(self) -> bool:
-        return self.api_token is not None
+        return self.auth_mode == "cognito"
+
+    @property
+    def verifier(self) -> Optional[TokenVerifier]:
+        return self._verifier
 
     def log_summary(self) -> None:
-        if self.auth_enabled:
-            logger.info("Auth ENABLED (WORLD_MODEL_API_TOKEN set).")
+        if self.auth_enabled and self.cognito is not None:
+            self.cognito.log_summary()
         else:
             logger.warning(
-                "Auth DISABLED — WORLD_MODEL_API_TOKEN is not set. The inference "
-                "API is UNAUTHENTICATED. Set WORLD_MODEL_API_TOKEN before exposing "
-                "this endpoint to any untrusted network."
+                "Auth DISABLED via WORLD_MODEL_AUTH_MODE=disabled. The inference "
+                "API is UNAUTHENTICATED and anyone who can reach it can run GPU "
+                "inference. This is for local development only."
             )
         if self.allowed_origins:
             logger.info("CORS allowlist: %s", ", ".join(self.allowed_origins))
@@ -135,12 +177,26 @@ def extract_token(auth_header: Optional[str], query_token: Optional[str]) -> Opt
 
 
 def token_valid(config: SecurityConfig, presented: Optional[str]) -> bool:
-    """Constant-time comparison of a presented token against the configured one."""
+    """True if ``presented`` is an acceptable Cognito access token.
+
+    Kept as a predicate so the HTTP middleware and the WebSocket handler share one
+    decision point. The reason for rejection is logged here rather than returned,
+    because it must not reach the client: "token lacks scope X" and "client Y is
+    not allowed" are both useful to an attacker enumerating a pool.
+    """
     if not config.auth_enabled:
         return True
+    verifier = config.verifier
+    if verifier is None:  # pragma: no cover - constructor guarantees this
+        raise AuthMisconfigured("Auth is enabled but no verifier was built")
     if not presented:
         return False
-    return secrets.compare_digest(presented, config.api_token or "")
+    try:
+        verifier.verify(presented)
+        return True
+    except AuthError as exc:
+        logger.info("Rejected token: %s", exc)
+        return False
 
 
 # =============================================================================
