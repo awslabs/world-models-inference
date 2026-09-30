@@ -15,14 +15,27 @@ export interface ModelStackProps extends cdk.StackProps {
   readonly target: 'ec2' | 'sagemaker';
   readonly manifest: ModelManifest;
   readonly capacityReservationId?: string;
+  readonly capacitySubnetIds?: string;
+  /**
+   * Override the manifest's ec2.instance for one deployment. p5.48xlarge
+   * capacity is frequently unavailable, and several cartridges run (more
+   * slowly) on a smaller box, so being able to retarget without editing the
+   * manifest is the difference between a demo and no demo.
+   */
+  readonly instanceTypeOverride?: string;
   /** ACM certificate ARN for the EC2 ALB — enables HTTPS (M1). */
   readonly certificateArn?: string;
   /** SSM SecureString name holding the shared inference API token (R1). */
-  readonly apiTokenParam?: string;
+  readonly cognitoUserPoolId?: string;
+  readonly cognitoClientIds?: string;
+  readonly cognitoScope?: string;
+  readonly authMode?: string;
   /** CORS allowlist forwarded to the inference container (R1). */
   readonly allowedOrigins?: string;
   /** Per-IP request/min limit on inference routes (R1). */
   readonly rateLimit?: string;
+  /** Email subscribed to EC2 scaling-event notifications. */
+  readonly notificationEmail?: string;
 }
 
 export class ModelStack extends cdk.Stack {
@@ -58,7 +71,7 @@ export class ModelStack extends cdk.Stack {
       new Ec2Inference(this, 'EC2', {
         endpointId,
         deploymentName,
-        instanceType: manifest.ec2.instance,
+        instanceType: props.instanceTypeOverride || manifest.ec2.instance,
         volumeSize: manifest.ec2.volumeSize,
         securityGroupId: sgId,
         albSecurityGroupId: albSgId,
@@ -69,10 +82,15 @@ export class ModelStack extends cdk.Stack {
         imageUri: image,
         modelDataS3Uri: modelDataUri,
         capacityReservationId: props.capacityReservationId,
+        capacitySubnetIds: props.capacitySubnetIds,
         certificateArn: props.certificateArn,
-        apiTokenParam: props.apiTokenParam,
+        cognitoUserPoolId: props.cognitoUserPoolId,
+        cognitoClientIds: props.cognitoClientIds,
+        cognitoScope: props.cognitoScope,
+        authMode: props.authMode,
         allowedOrigins: props.allowedOrigins,
         rateLimit: props.rateLimit,
+        notificationEmail: props.notificationEmail,
       });
 
       new ssm.StringParameter(this, 'EndpointRegistry', {
@@ -82,7 +100,7 @@ export class ModelStack extends cdk.Stack {
           model: endpointId,
           target: 'ec2',
           mode: inferMode(manifest),
-          instance_type: manifest.ec2.instance,
+          instance_type: props.instanceTypeOverride || manifest.ec2.instance,
         }),
       });
 
@@ -98,9 +116,16 @@ export class ModelStack extends cdk.Stack {
         modelDataS3Prefix: modelDataUri,
         maxConcurrent: manifest.sagemaker.maxConcurrent,
         asyncConfig: mode === 'async' ? { output: outputUri } : undefined,
-        apiTokenParam: props.apiTokenParam,
+        cognitoUserPoolId: props.cognitoUserPoolId,
+        cognitoClientIds: props.cognitoClientIds,
+        cognitoScope: props.cognitoScope,
+        authMode: props.authMode,
         allowedOrigins: props.allowedOrigins,
         rateLimit: props.rateLimit,
+        subnetIds: privateSubnets,
+        securityGroupId: sgId,
+        vpcId,
+        repositoryName: `world-model-${endpointId}`,
       });
 
       new ssm.StringParameter(this, 'EndpointRegistry', {

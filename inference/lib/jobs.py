@@ -25,10 +25,11 @@ class JobStore:
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self.pending: "queue.Queue[str]" = queue.Queue()
 
-    def submit(self, job_id: str, params: Dict[str, Any]) -> None:
+    def submit(self, job_id: str, params: Dict[str, Any], owner: str) -> None:
+        """Queue a job. ``owner`` is the submitting principal; see ``get_owned``."""
         with self._lock:
             self._jobs[job_id] = {
-                "status": "queued", "params": params,
+                "status": "queued", "params": params, "owner": owner,
                 "submitted_at": time.time(), "started_at": None,
                 "completed_at": None, "result_path": None, "error": None,
             }
@@ -43,6 +44,17 @@ class JobStore:
         with self._lock:
             entry = self._jobs.get(job_id)
             return dict(entry) if entry else None
+
+    def get_owned(self, job_id: str, owner: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Like ``get``, but only returns the job to the principal that submitted it.
+
+        Another caller's job is reported as absent rather than forbidden, so a
+        job id cannot be probed to learn that it exists.
+        """
+        entry = self.get(job_id)
+        if entry is None or owner is None or entry.get("owner") != owner:
+            return None
+        return entry
 
 
 def run_worker(runner: Runner, jobs: JobStore, stop: threading.Event):

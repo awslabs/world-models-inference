@@ -23,18 +23,23 @@ export const useWebSocket = ({ url, onMessage, onBinaryMessage, onConnect, onDis
 
   const connect = useCallback(async () => {
     try {
-      // R1: the backend validates the shared WORLD_MODEL_API_TOKEN, so the
-      // frontend presents that same token (written into config.js by
-      // ./deploy.sh ui) rather than a Cognito idToken the backend never checks.
+      // The backend verifies Cognito ACCESS tokens (an ID token is rejected).
+      //
+      // In the `./deploy.sh ui` flow this is normally undefined: the vite dev proxy
+      // injects the Authorization header server-side, so no token reaches the
+      // browser at all. It is read here for the case where the UI is pointed
+      // straight at an endpoint and a token has been supplied deliberately.
       const token = getConfig().apiToken;
 
       // M2: the browser WebSocket API cannot set an Authorization header, so the
-      // token is passed as a query param. Always use a wss:// (TLS) endpoint so
-      // the URL is encrypted in transit, and do not log full WebSocket URLs
-      // server-side. When no token is configured (local/demo), connect without
-      // one — the backend only enforces auth when a token is set.
-      const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
-      const ws = new WebSocket(wsUrl);
+      // token is offered as a subprotocol after the 'world-model.bearer' marker
+      // (the server selects the marker, never echoes the token). Unlike a query
+      // param, a header is not written to ALB access logs or browser history.
+      // Use a wss:// (TLS) endpoint so the handshake is encrypted in transit.
+      //
+      // Connecting without a token is correct behind the dev proxy (which adds the
+      // header) and fails against a secured endpoint otherwise, by design.
+      const ws = token ? new WebSocket(url, ['world-model.bearer', token]) : new WebSocket(url);
       // Receive binary data as Blob (default, but explicit for clarity)
       ws.binaryType = 'blob';
       wsRef.current = ws;

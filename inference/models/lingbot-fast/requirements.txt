@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
 # Runtime requirements for lingbot-fast.
 #
 # On the AWS Deep Learning AMI torch / torchvision are pre-installed and must NOT be

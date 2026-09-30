@@ -48,7 +48,7 @@ class HuggingfaceTokenizer:
 
         # init tokenizer (vendored upstream; loads a local tokenizer dir staged
         # from S3, not a live Hub download)
-        self.tokenizer = AutoTokenizer.from_pretrained(name, **kwargs)  # nosec B615
+        self.tokenizer = AutoTokenizer.from_pretrained(name, **kwargs)  # nosec B615 - name is a local tokenizer dir staged from S3; no Hub download, so no revision to pin
         self.vocab_size = self.tokenizer.vocab_size
 
     def __call__(self, sequence, **kwargs):

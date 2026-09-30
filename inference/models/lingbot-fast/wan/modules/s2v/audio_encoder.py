@@ -62,7 +62,7 @@ class AudioEncoder():
         # Pin the Hugging Face revision (supply-chain: an unpinned download would
         # silently pull whatever is at HEAD). This is the s2v audio path, which
         # lingbot-fast's image-to-video pipeline does not currently exercise.
-        _revision = "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"
+        _revision = "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"  # pragma: allowlist secret - Hugging Face commit SHA pin, not a credential
         self.processor = Wav2Vec2Processor.from_pretrained(model_id, revision=_revision)  # nosec B615 - revision pinned above
         self.model = Wav2Vec2ForCTC.from_pretrained(model_id, revision=_revision)  # nosec B615 - revision pinned above
 

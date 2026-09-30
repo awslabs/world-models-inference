@@ -7,7 +7,7 @@ Triggers a build that downloads from HuggingFace Hub or torch.hub
 and syncs to S3. The CodeBuild project is managed by CDK (shared stack).
 
 Usage:
-  python scripts/stage-weights.py vjepa2-ac --source torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant
+  python scripts/stage-weights.py vjepa2 --source torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant
   python scripts/stage-weights.py lingbot-fast --source hf:robbyant/lingbot-world-base-cam
   python scripts/stage-weights.py lingbot-fast --source hf:robbyant/lingbot-world-fast --subdir lingbot_world_fast
 """
@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -49,6 +50,22 @@ def get_s3_dest(endpoint_id: str, region: str) -> str:
     return f"s3://{bucket}/{prefix}"
 
 
+# Everything below is interpolated into shell commands that run on the CodeBuild
+# host under the build role, so each user-supplied piece is checked against a
+# strict pattern first and shell-quoted as well. Validation rejects anything a
+# real repo/entrypoint name would never contain; quoting is the backstop.
+_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+_ENTRY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SUBDIR_RE = re.compile(r"^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$")
+_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _checked(value: str, pattern: re.Pattern, what: str) -> str:
+    if not pattern.fullmatch(value):
+        sys.exit(f"Invalid {what}: {value!r}")
+    return value
+
+
 # These /tmp paths are literals inside shell commands that run on a remote
 # Linux CodeBuild/EC2 box (not this machine), so tempfile.gettempdir() would
 # resolve the wrong host. The build environment is single-use and isolated.
@@ -56,9 +73,11 @@ _REMOTE_TMP = "/tmp/weights"  # nosec B108 - remote build-box path, not local
 
 
 def build_commands(source: str, subdir: str, s3_dest: str, region: str) -> list:
+    if subdir:
+        _checked(subdir, _SUBDIR_RE, "--subdir")
     if source.startswith("hf:"):
-        repo = source[3:]
-        dest_dir = f"{_REMOTE_TMP}/{subdir}" if subdir else _REMOTE_TMP
+        repo = shlex.quote(_checked(source[3:], _REPO_RE, "HuggingFace repo"))
+        dest_dir = shlex.quote(f"{_REMOTE_TMP}/{subdir}" if subdir else _REMOTE_TMP)
         install = ["pip3 install -q huggingface_hub"]
         # Authenticate before download so gated repos (e.g. nvidia/Lyra-2.0) work.
         # The modern `hf` CLI does not auto-read HF_TOKEN for gated access, so log
@@ -82,21 +101,63 @@ def build_commands(source: str, subdir: str, s3_dest: str, region: str) -> list:
         parts = source[10:].split(":", 1)
         if len(parts) != 2:
             sys.exit("Format: torch_hub:<repo>:<entrypoint>")
-        repo, entry = parts
+        repo = _checked(parts[0], _REPO_RE, "torch.hub repo")
+        entry = _checked(parts[1], _ENTRY_RE, "torch.hub entrypoint")
         install = ["pip3 install -q torch --index-url https://download.pytorch.org/whl/cpu"]
         download = [
             f"mkdir -p {_REMOTE_TMP}",
             f"python3 -c \""
             f"import torch,os,shutil; os.environ['TORCH_HOME']='/tmp/hub'; "
             f"torch.hub.load('{repo}','{entry}',trust_repo=True); "
-            f"[shutil.move(os.path.join('/tmp/hub/hub/checkpoints',f),_REMOTE_TMP+'/'+f) "
+            f"[shutil.move(os.path.join('/tmp/hub/hub/checkpoints',f),'{_REMOTE_TMP}/'+f) "
             f"for f in os.listdir('/tmp/hub/hub/checkpoints')]\"",
         ]
     else:
         sys.exit("Use hf:<repo> or torch_hub:<repo>:<entry>")
 
-    upload = [f"aws s3 sync {_REMOTE_TMP}/ {s3_dest} --region {region}", "echo '=== DONE ==='"]
+    upload = [
+        f"aws s3 sync {_REMOTE_TMP}/ {shlex.quote(s3_dest)} --region {shlex.quote(region)}",
+        "echo '=== DONE ==='",
+    ]
     return install + download + upload
+
+
+# Created by the foundation stack (cdk/lib/shared.ts); readable only by the
+# CodeBuild role. Referenced by name, which Secrets Manager and CodeBuild accept.
+HF_TOKEN_SECRET = "world-model/hf-token"  # pragma: allowlist secret - the secret's name, not its value
+_CLEARED = "cleared-after-build"
+
+
+def _put_hf_token(value: str, region: str) -> None:
+    # Passed on stdin, so the token never appears in this machine's process list.
+    r = subprocess.run(
+        ["aws", "secretsmanager", "put-secret-value", "--secret-id", HF_TOKEN_SECRET,
+         "--secret-string", "file:///dev/stdin", "--region", region],
+        input=value, capture_output=True, text=True, timeout=30,
+    )
+    if r.returncode != 0:
+        hint = ""
+        if "ResourceNotFoundException" in r.stderr:
+            hint = ("\n  The secret is created by the foundation stack: redeploy it with "
+                    "`./deploy.sh build <model>`, or unset HF_TOKEN if the repo is not gated.")
+        sys.exit(f"Failed to store HF_TOKEN in Secrets Manager ({HF_TOKEN_SECRET}): {r.stderr.strip()}{hint}")
+
+
+def _clear_hf_token(region: str) -> None:
+    # Written twice: each put moves AWSPREVIOUS onto the version it replaces, so
+    # a single put would leave the real token readable as AWSPREVIOUS. After two,
+    # both AWSCURRENT and AWSPREVIOUS are the placeholder and the token's version
+    # has no staging label: it is deprecated, and readable only by explicit version
+    # ID (by the build role or an account admin) until Secrets Manager ages it out.
+    for _ in range(2):
+        r = subprocess.run(
+            ["aws", "secretsmanager", "put-secret-value", "--secret-id", HF_TOKEN_SECRET,
+             "--secret-string", _CLEARED, "--region", region],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            print(f"\n  WARNING: could not clear {HF_TOKEN_SECRET}; clear it by hand: {r.stderr}")
+            return
 
 
 def main():
@@ -106,6 +167,7 @@ def main():
     parser.add_argument("--subdir", default="", help="Subdirectory within S3 prefix")
     parser.add_argument("--region", default=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
     args = parser.parse_args()
+    _checked(args.model, _MODEL_RE, "model id")
 
     account = run(["aws", "sts", "get-caller-identity", "--query", "Account", "--output", "text"]).stdout.strip()
     if not account:
@@ -122,10 +184,20 @@ def main():
         "phases": {"build": {"commands": commands}},
     })
 
+    # A gated-repo token must not travel as a PLAINTEXT override: those are stored
+    # on the build record and readable by anyone with codebuild:BatchGetBuilds.
+    # Write it to the foundation stack's Secrets Manager secret instead and hand
+    # CodeBuild a reference, which it resolves at run time under the build role.
+    #
+    # The token is a personal HuggingFace credential, which HuggingFace offers no
+    # API to rotate, so the secret is not given a rotation schedule. Instead it is
+    # only populated for the duration of a build: the value is cleared again when
+    # the build ends, whatever the outcome (see _clear_hf_token).
     hf_token = os.environ.get("HF_TOKEN", "")
     env_overrides = []
     if hf_token:
-        env_overrides.append({"name": "HF_TOKEN", "value": hf_token, "type": "PLAINTEXT"})
+        _put_hf_token(hf_token, args.region)
+        env_overrides.append({"name": "HF_TOKEN", "value": HF_TOKEN_SECRET, "type": "SECRETS_MANAGER"})
 
     print(f"  Model:   {args.model}")
     print(f"  Source:  {args.source}")
@@ -142,32 +214,38 @@ def main():
     if env_overrides:
         start_args += ["--environment-variables-override", json.dumps(env_overrides)]
 
-    r = run(start_args)
-    if r.returncode != 0:
-        sys.exit(f"Failed to start build: {r.stderr}")
+    try:
+        r = run(start_args)
+        if r.returncode != 0:
+            sys.exit(f"Failed to start build: {r.stderr}")
 
-    build_id = r.stdout.strip()
-    print(f"  Build:   {build_id}")
-    print()
+        build_id = r.stdout.strip()
+        print(f"  Build:   {build_id}")
+        print()
 
-    while True:
-        time.sleep(15)
-        r = run(["aws", "codebuild", "batch-get-builds", "--ids", build_id,
-                 "--query", "builds[0].[buildStatus,currentPhase]", "--output", "text",
-                 "--region", args.region])
-        parts = r.stdout.strip().split()
-        status = parts[0] if parts else "UNKNOWN"
-        phase = parts[1] if len(parts) > 1 else ""
-        sys.stdout.write(f"\r  {status} ({phase})   ")
-        sys.stdout.flush()
+        while True:
+            time.sleep(15)
+            r = run(["aws", "codebuild", "batch-get-builds", "--ids", build_id,
+                     "--query", "builds[0].[buildStatus,currentPhase]", "--output", "text",
+                     "--region", args.region])
+            parts = r.stdout.strip().split()
+            status = parts[0] if parts else "UNKNOWN"
+            phase = parts[1] if len(parts) > 1 else ""
+            sys.stdout.write(f"\r  {status} ({phase})   ")
+            sys.stdout.flush()
 
-        if status == "SUCCEEDED":
-            print(f"\n\n  Weights staged at {s3_dest}")
-            return
-        if status in ("FAILED", "FAULT", "STOPPED", "TIMED_OUT"):
-            print(f"\n\n  Build {status}. Check logs:")
-            print(f"  aws codebuild batch-get-builds --ids {build_id} --query 'builds[0].logs.deepLink' --output text --region {args.region}")
-            sys.exit(1)
+            if status == "SUCCEEDED":
+                print(f"\n\n  Weights staged at {s3_dest}")
+                return
+            if status in ("FAILED", "FAULT", "STOPPED", "TIMED_OUT"):
+                print(f"\n\n  Build {status}. Check logs:")
+                print(f"  aws codebuild batch-get-builds --ids {build_id} --query 'builds[0].logs.deepLink' --output text --region {args.region}")
+                sys.exit(1)
+    finally:
+        # CodeBuild resolves the secret when the build starts, so the value is
+        # only needed until then; clearing it on exit bounds its lifetime to one run.
+        if hf_token:
+            _clear_hf_token(args.region)
 
 
 if __name__ == "__main__":

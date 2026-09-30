@@ -23,7 +23,10 @@
     "tailwindcss": "^4.2.2"
   },
   "overrides": {
-    "fast-xml-parser": "^5.3.5"
+    "fast-xml-parser": "^5.3.5",
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^9.0.7"
+    }
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
@@ -36,6 +39,6 @@
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
     "typescript": "^5.2.2",
-    "vite": "^5.0.8"
+    "vite": "^6.4.3"
   }
 }

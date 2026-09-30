@@ -63,7 +63,8 @@ class Cosmos3NanoPipeline(Runner):
 
     def generate(self, **params) -> str:
         prompt = params.get("prompt", "A cinematic aerial shot over a mountain range at sunrise.")
-        image_path = params.get("image")
+        # /generate and /invocations stage inputs as image_path; "image" is the older key.
+        image_path = params.get("image_path") or params.get("image")
         num_frames = int(params.get("num_frames", DEFAULT_NUM_FRAMES))
         height = int(params.get("height", DEFAULT_HEIGHT))
         width = int(params.get("width", DEFAULT_WIDTH))

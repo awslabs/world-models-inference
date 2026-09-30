@@ -33,6 +33,19 @@ interface RawManifest {
   ec2: { instance: string; volume_size?: number };
 }
 
+/**
+ * Every cartridge in the catalogue: each inference/models/<id>/ with an
+ * endpoint.yaml, excluding scaffolding directories whose names start with "_".
+ */
+export function listCartridges(): string[] {
+  const modelsRoot = path.resolve(__dirname, '../../../inference/models'); // nosemgrep
+  return fs.readdirSync(modelsRoot, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith('_'))
+    .filter((d) => fs.existsSync(path.join(modelsRoot, d.name, 'endpoint.yaml'))) // nosemgrep
+    .map((d) => d.name)
+    .sort();
+}
+
 export function loadManifest(endpointId: string, accountId: string): ModelManifest {
   // endpointId comes from CDK context (`-c model=<id>`). Constrain it to a
   // single safe path segment so it can't traverse out of inference/models/

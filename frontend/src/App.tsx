@@ -41,7 +41,7 @@ function App() {
   // Demo mode: skip auth entirely so the UI can be previewed on CloudFront
   const isDemoMode = (() => { try { return getConfig().demoMode === true; } catch { return false; } })();
 
-  // `./deploy ui` sets this to 'lingbot' → render the World Foundry catalogue
+  // `./deploy ui` sets this to 'lingbot' → render the World Model Inference catalogue
   // pointing at a live EC2 endpoint. No auth, no lobby, no WebSocket.
   const uiMode = (() => { try { return getConfig().ui || 'worlds'; } catch { return 'worlds'; } })();
   const apiUrl = (() => { try { return getConfig().lingbotApiUrl; } catch { return ''; } })();
@@ -81,7 +81,7 @@ function App() {
                 redirectSignIn: [config.redirectSignIn],
                 redirectSignOut: [config.redirectSignOut],
                 responseType: 'code',
-                providers: [{ custom: 'Federate' }],
+                ...(config.identityProvider ? { providers: [{ custom: config.identityProvider }] } : {}),
               },
             },
           },
@@ -127,8 +127,11 @@ function App() {
         <h1 className="text-5xl font-extrabold tracking-wider text-white text-center" style={{ textShadow: '0 0 40px rgba(83,159,229,0.4)' }}>
           INTERACTIVE<br/>WORLD BUILDER
         </h1>
-        <Button variant="primary" size="lg" onClick={() => signInWithRedirect({ provider: { custom: 'Federate' } })}>
-          Sign in with Midway
+        <Button variant="primary" size="lg" onClick={() => {
+          const idp = getConfig().identityProvider;
+          void signInWithRedirect(idp ? { provider: { custom: idp } } : undefined);
+        }}>
+          Sign in
         </Button>
       </div>
     );

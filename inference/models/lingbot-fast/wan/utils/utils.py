@@ -11,6 +11,7 @@ import os
 import os.path as osp
 import shutil
 import subprocess
+import tempfile
 
 import imageio
 import torch
@@ -100,7 +101,7 @@ def save_video(tensor,
                normalize=True,
                value_range=(-1, 1)):
     # cache file
-    cache_file = osp.join('/tmp', rand_name(  # nosec B108 - vendored upstream; container-local scratch, single-tenant
+    cache_file = osp.join(tempfile.gettempdir(), rand_name(
         suffix=suffix)) if save_file is None else save_file
 
     # save to cache

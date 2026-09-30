@@ -1,8 +1,10 @@
 # Architecture
 
-![World Model Accelerator architecture on AWS](diagrams/architecture-v1-cartridge-platform.png)
+![World Model Inference architecture on AWS](diagrams/architecture-v1-cartridge-platform.png)
 
-The editable source is [`diagrams/architecture-v1-cartridge-platform.drawio`](diagrams/architecture-v1-cartridge-platform.drawio)
+The PNG above is exported from the draw.io source
+[`diagrams/architecture-v1-cartridge-platform.drawio`](diagrams/architecture-v1-cartridge-platform.drawio)
+— edit that, then re-export with `drawio -x -f png -s 1.5 -b 20` (or File → Export in the app)
 (open at [app.diagrams.net](https://app.diagrams.net) or with the VS Code draw.io
 extension).
 
@@ -63,8 +65,8 @@ At boot the instance:
 2. authenticates to ECR and `docker pull`s its image
 3. symlinks `/opt/checkpoints` onto instance NVMe when present
 4. `aws s3 sync`s weights from the artifacts bucket over the **S3 gateway endpoint**
-5. reads the shared API token from SSM Parameter Store (`--with-decryption`) — the
-   secret never enters the CloudFormation template
+5. receives its Cognito settings (user pool ID, client IDs, scope — all non-secret)
+   as container env; the app verifies pool-issued access tokens against the pool's JWKS
 6. `docker run --gpus all --net host --ipc host -v $CKPT_DIR:/opt/ml/model`
 
 ## Run
@@ -95,8 +97,9 @@ and all GPUs run `generate()` together. Clients poll `GET /jobs/{id}` then fetch
 `GET /jobs/{id}/output`. Job states: `queued → running → complete | failed`.
 
 **Real-time cartridges** hold a WebSocket open on `/ws`. Auth is checked *before*
-`ws.accept()` (the token arrives as `?token=`, since WebSocket has no Authorization
-header; failure closes with 1008). Two asyncio tasks then run concurrently: one
+`ws.accept()` (an `Authorization` header, or from a browser the
+`world-model.bearer` subprotocol, since the browser WebSocket API cannot set headers;
+failure closes with 1008). Two asyncio tasks then run concurrently: one
 reads client actions into an `ActionBuffer` (latest-action-wins, decoupling input
 rate from GPU rate), the other drains `runner.stream()` back to the client. There is
 no job queue on this path.
@@ -118,15 +121,17 @@ Middleware order is headers → CORS → rate limit → auth. See
 ## Elsewhere
 
 The **catalogue UI** runs locally: `./deploy.sh ui` starts vite on `:3000` and
-proxies the API paths to the ALB, injecting the bearer token **server-side**. The
+proxies the API paths to the ALB, injecting a Cognito access token **server-side**. The
 browser only ever talks to localhost, so there is no CORS problem and the token
 never reaches the JS bundle. There is no hosted UI — nothing serves the SPA from
 AWS.
 
 Passing `sagemaker` as the deploy target provisions a SageMaker endpoint from the
 same image and weights instead of EC2. Async models get an
-`asyncInferenceConfig` writing to the outputs bucket; the token is injected via a
-`{{resolve:ssm-secure:...}}` dynamic reference.
+`asyncInferenceConfig` writing to the outputs bucket. SageMaker endpoints are
+IAM-authenticated (`sagemaker:InvokeEndpoint`), so the Cognito check is defence in
+depth there; the same non-secret `WORLD_MODEL_COGNITO_*` settings are passed as
+container environment.
 
 ## Project layout
 

@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -23,6 +24,30 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = REPO_ROOT / "inference" / "models"
+
+
+# The buildspec below is a shell script that runs on the CodeBuild host under the
+# build role, and several of its values come from the cartridge's endpoint.yaml —
+# third-party content. Each value is checked against the shape it legitimately
+# has before it is interpolated, and shell-quoted as well; validation is the
+# gate, quoting the backstop.
+_MODEL_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
+# A base image must name an explicit version: a tag other than "latest", or a digest.
+_IMAGE_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._/-]*"
+    r"(:(?!latest$)[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|@sha256:[a-f0-9]{64})$"
+)
+_WHEEL_RE = re.compile(r"^https://[A-Za-z0-9._~/%+{}:-]+\.whl$")
+_FLAG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-[0-9]+$")
+
+
+def checked(value: str, pattern: re.Pattern, what: str) -> str:
+    """Return ``value`` if it fully matches ``pattern``; exit otherwise."""
+    if not pattern.fullmatch(value):
+        sys.exit(f"Invalid {what}: {value!r}")
+    return value
 
 
 def run(cmd, timeout=30):
@@ -42,7 +67,7 @@ def get_version(endpoint_id: str) -> str:
     if not manifest.exists():
         sys.exit(f"No endpoint.yaml for {endpoint_id}")
     m = re.search(r"^version:\s*(.+)$", manifest.read_text(), re.MULTILINE)
-    return m.group(1).strip() if m else "latest"
+    return checked(m.group(1).strip() if m else "latest", _TAG_RE, "endpoint.yaml version")
 
 
 # Default base image when a cartridge doesn't pin one in endpoint.yaml. Kept in
@@ -62,7 +87,8 @@ def manifest_scalar(endpoint_id: str, key: str):
 
 def get_base_image(endpoint_id: str) -> str:
     """Read an optional `base_image:` from endpoint.yaml (shared Dockerfile only)."""
-    return manifest_scalar(endpoint_id, "base_image") or DEFAULT_BASE_IMAGE
+    image = manifest_scalar(endpoint_id, "base_image") or DEFAULT_BASE_IMAGE
+    return checked(image, _IMAGE_RE, "endpoint.yaml base_image")
 
 
 def resolve_dockerfile(endpoint_id: str):
@@ -93,7 +119,8 @@ def main():
     parser.add_argument("--region", default=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
     args = parser.parse_args()
 
-    endpoint_id = args.model
+    endpoint_id = checked(args.model, _MODEL_RE, "model id")
+    checked(args.region, _REGION_RE, "--region")
     if not (MODELS_DIR / endpoint_id).is_dir():
         sys.exit(f"No such model directory: inference/models/{endpoint_id}")
     dockerfile, uses_shared = resolve_dockerfile(endpoint_id)
@@ -107,10 +134,18 @@ def main():
     repo_name = f"world-model-{endpoint_id}"
     image_uri = f"{account}.dkr.ecr.{args.region}.amazonaws.com/{repo_name}:{version}"
 
-    # Ensure ECR repo exists
+    # Ensure the ECR repo exists with vulnerability scanning on push, so every
+    # image this pipeline builds is scanned for known CVEs in its OS and language
+    # packages. Applied to existing repos too, which predate the setting.
     r = run(["aws", "ecr", "describe-repositories", "--repository-names", repo_name, "--region", args.region])
     if r.returncode != 0:
-        run(["aws", "ecr", "create-repository", "--repository-name", repo_name, "--region", args.region])
+        run(["aws", "ecr", "create-repository", "--repository-name", repo_name,
+             "--image-scanning-configuration", "scanOnPush=true", "--region", args.region])
+    else:
+        scan = run(["aws", "ecr", "put-image-scanning-configuration", "--repository-name", repo_name,
+                    "--image-scanning-configuration", "scanOnPush=true", "--region", args.region])
+        if scan.returncode != 0:
+            print(f"  WARNING: could not enable scan-on-push for {repo_name}: {scan.stderr.strip()}")
 
     # Upload source (zip the repo)
     import tempfile, zipfile
@@ -149,16 +184,18 @@ def main():
     # self-contained and takes no build args.
     if uses_shared:
         parts = [
-            f"--build-arg MODEL_ID={endpoint_id}",
-            f"--build-arg BASE_IMAGE={get_base_image(endpoint_id)}",
+            "--build-arg " + shlex.quote(f"MODEL_ID={endpoint_id}"),
+            "--build-arg " + shlex.quote(f"BASE_IMAGE={get_base_image(endpoint_id)}"),
         ]
         # Optional, declared in endpoint.yaml.
         wheel = manifest_scalar(endpoint_id, "flash_attn_wheel")
         if wheel:
-            parts.append(f"--build-arg FLASH_ATTN_WHEEL={wheel}")
+            checked(wheel, _WHEEL_RE, "endpoint.yaml flash_attn_wheel")
+            parts.append("--build-arg " + shlex.quote(f"FLASH_ATTN_WHEEL={wheel}"))
         no_deps = manifest_scalar(endpoint_id, "pip_no_deps")
         if no_deps is not None:
-            parts.append(f"--build-arg PIP_NO_DEPS={no_deps}")
+            checked(no_deps, _FLAG_RE, "endpoint.yaml pip_no_deps")
+            parts.append("--build-arg " + shlex.quote(f"PIP_NO_DEPS={no_deps}"))
         build_args = " ".join(parts)
     else:
         build_args = ""

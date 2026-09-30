@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { getConfig } from '@/services/config';
 import { BundledExample } from '@/data/lingbot-examples';
 import { profileFor } from '@/data/gen-profiles';
+import { AuthedImg } from '@/components/AuthedImg';
 
 const SIZE_OPTIONS = [
   { label: '480×832',   value: '480*832' },
@@ -80,12 +81,10 @@ export const LingbotGenerator = ({
 } = {}) => {
   const config = getConfig();
   const apiUrl = endpointUrl || config.lingbotApiUrl;
-  // R1: present the shared API token the backend validates. fetch() calls send
-  // it as a Bearer header; <img> src URLs (which can't set headers) append it as
-  // a ?token= query param, which the backend AuthMiddleware also accepts.
+  // Present the access token as a Bearer header. The server ignores ?token= on
+  // HTTP routes, so images go through AuthedImg rather than a token in the URL.
   const apiToken = config.apiToken;
   const authHeaders: Record<string, string> = apiToken ? { Authorization: `Bearer ${apiToken}` } : {};
-  const withToken = (u: string) => (apiToken ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(apiToken)}` : u);
   const profile = profileFor(cartridgeId);
   const firstExample = profile.examples[0] ?? null;
 
@@ -93,7 +92,7 @@ export const LingbotGenerator = ({
   const [prompt, setPrompt] = useState(firstExample?.prompt ?? profile.defaultPrompt);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(
-    firstExample ? withToken(`${apiUrl}/examples/${firstExample.id}/image`) : null,
+    firstExample ? `${apiUrl}/examples/${firstExample.id}/image` : null,
   );
   const [selectedExampleId, setSelectedExampleId] = useState<string | null>(firstExample?.id ?? null);
   const [examples] = useState<BundledExample[]>(profile.examples);
@@ -149,7 +148,7 @@ export const LingbotGenerator = ({
   const handleExampleClick = useCallback((ex: BundledExample) => {
     setSelectedExampleId(ex.id);
     setPrompt(ex.prompt);
-    setImagePreview(withToken(`${apiUrl}/examples/${ex.id}/image`));
+    setImagePreview(`${apiUrl}/examples/${ex.id}/image`);
     setImageFile(null);
     if (ex.has_poses) setCameraMode('none');
   }, [apiUrl]);
@@ -264,8 +263,9 @@ export const LingbotGenerator = ({
                       linear-gradient(135deg, hsl(${hue} 30% 10%), hsl(${(hue + 60) % 360} 30% 8%))`,
                   }}
                 >
-                  <img
-                    src={withToken(`${apiUrl}/examples/${ex.id}/image`)}
+                  <AuthedImg
+                    src={`${apiUrl}/examples/${ex.id}/image`}
+                    token={apiToken}
                     alt={`Example ${ex.id}`}
                     className="w-full h-full object-cover transition-all duration-300 group-hover:brightness-110"
                     onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = '0'; }}
@@ -326,8 +326,9 @@ export const LingbotGenerator = ({
             </div>
             {imagePreview && (
               <div className="mt-3">
-                <img
+                <AuthedImg
                   src={imagePreview}
+                  token={apiToken}
                   alt="Seed preview"
                   className="max-h-40 rounded-lg border border-game-border"
                 />

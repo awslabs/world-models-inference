@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
 # V-JEPA 2 — realtime video encoder (Meta FAIR)
 # https://github.com/facebookresearch/vjepa2
 # Weights: facebook/vjepa2-vitg-fpc64-384 (ViT-giant, 384px, 1B params)
@@ -13,3 +16,9 @@ sagemaker:
 
 ec2:
   instance: g5.2xlarge
+
+# --- Weights licence ---------------------------------------------------------
+# Verified 2026-09-21: HF tag apache-2.0. Upstream facebookresearch/vjepa2 is MIT.
+license: Apache-2.0
+license_url: https://huggingface.co/facebook/vjepa2-vitg-fpc64-384
+license_restricted: false

@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
 # Plain CUDA base + PyPI torch, matching Lyra-2's official INSTALL.md conda
 # recipe (torch 2.7.1 / cu128 / Python 3.10). The NGC prebuilt images were the
 # problem: they ship a second numpy 1.x (conda-layer) that pip can't cleanly
@@ -81,6 +84,17 @@ RUN cd /opt/ml/code/lyra/Lyra-2 && \
     USE_SYSTEM_EIGEN=1 pip install --no-build-isolation -e 'lyra_2/_src/inference/vipe'
 ENV LYRA_REPO=/opt/ml/code/lyra/Lyra-2
 
+# Shared serving deps, including the Cognito token verifier (lib/cognito.py).
+# Installed from one file so a cartridge cannot ship an image that is missing the
+# auth library — that is how an endpoint once kept serving with auth unenforced
+# (PCSR D484282450, round 3). A missing auth dep must break the build instead.
+#
+# This also repairs drift: each cartridge used to name these deps itself, and they
+# had diverged (lyra-2 installed bare `uvicorn`, cosmos3-nano omitted `websockets`,
+# matrix-game-3 listed none). Cartridge-specific deps stay in its requirements.txt.
+COPY inference/lib/requirements.txt /tmp/lib-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/lib-requirements.txt
+
 COPY inference/lib/ /opt/ml/code/lib/
 COPY inference/models/lyra-2/requirements.txt /opt/ml/code/requirements.txt
 RUN pip install --no-cache-dir -r /opt/ml/code/requirements.txt
@@ -101,4 +115,9 @@ USER appuser
 
 WORKDIR /opt/ml/code
 EXPOSE 8080
+# Container health: /ping is unauthenticated and cheap. Model load can take many
+# minutes on first boot, hence the long start period; the status is advisory
+# (ALB/SageMaker run their own /ping probes), nothing restarts on it.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30m --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/ping', timeout=4).status == 200 else 1)"
 ENTRYPOINT ["./lib/serve"]

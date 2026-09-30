@@ -6,13 +6,33 @@
 Everything here is env-var driven so the same container image runs locked
 down in production and open for local/demo use:
 
-  WORLD_MODEL_API_TOKEN        Shared bearer token. If set, every request
-                               (and every WebSocket) must present it via
-                               ``Authorization: Bearer <token>`` (the
-                               ``Bearer`` prefix is optional) or, for
-                               WebSockets, a ``?token=<token>`` query param.
-                               If UNSET, auth is DISABLED and a loud warning
-                               is logged at startup.
+  WORLD_MODEL_AUTH_MODE        ``cognito`` (default) or ``disabled``.
+
+                               Authentication is REQUIRED by default. If the
+                               Cognito settings below are missing the server
+                               REFUSES TO START rather than serving an
+                               unauthenticated GPU endpoint — the previous
+                               behaviour, where an unset token silently disabled
+                               auth, meant a deploy that forgot one env var
+                               produced an open endpoint with only a log line to
+                               say so.
+
+                               ``disabled`` is an explicit, loudly-logged opt-out
+                               for local development. Never use it on a network
+                               anyone else can reach.
+
+                               Callers present a Cognito **access token** as
+                               ``Authorization: Bearer <token>``. Browser
+                               WebSockets, which cannot set that header, offer
+                               the subprotocols ``world-model.bearer, <token>``
+                               instead (see ``ws_bearer_token``). A token is
+                               never accepted from the URL, so it cannot land
+                               in ALB/proxy access logs or browser history. See
+                               ``lib/cognito.py`` for what is verified and why it
+                               is an access token rather than an ID token.
+
+  WORLD_MODEL_COGNITO_*        User pool, allowed app client IDs and required
+                               scope. Documented in ``lib/cognito.py``.
 
   WORLD_MODEL_ALLOWED_ORIGINS  Comma-separated CORS allowlist (e.g.
                                ``https://d123.cloudfront.net``). If UNSET, no
@@ -32,7 +52,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import secrets
 import threading
 import time
 from pathlib import Path
@@ -42,6 +61,8 @@ from fastapi import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+
+from lib.cognito import AuthError, AuthMisconfigured, CognitoConfig, TokenVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +84,31 @@ _DEFAULT_RATE_LIMIT = 60
 
 
 class SecurityConfig:
-    """Snapshot of security-relevant env vars, resolved once at startup."""
+    """Snapshot of security-relevant env vars, resolved once at startup.
+
+    Constructing this raises ``AuthMisconfigured`` when auth is required but not
+    configured. That is deliberate: it turns a missing env var into a failed
+    deploy instead of an open endpoint.
+    """
 
     def __init__(self) -> None:
-        self.api_token: Optional[str] = os.environ.get("WORLD_MODEL_API_TOKEN") or None
+        mode = (os.environ.get("WORLD_MODEL_AUTH_MODE") or "cognito").strip().lower()
+        if mode not in {"cognito", "disabled"}:
+            raise AuthMisconfigured(
+                f"WORLD_MODEL_AUTH_MODE={mode!r} is not recognised. Use 'cognito' "
+                "(default) or 'disabled'."
+            )
+        self.auth_mode: str = mode
+        self.cognito: Optional[CognitoConfig] = None
+        self._verifier: Optional[TokenVerifier] = None
+
+        if mode == "cognito":
+            # Both of these raise rather than degrade. from_env() reports which
+            # setting is missing; TokenVerifier() fails if PyJWT is absent, which
+            # is how a Dockerfile that skips lib/requirements.txt gets caught.
+            self.cognito = CognitoConfig.from_env()
+            self._verifier = TokenVerifier(self.cognito)
+
         self.allowed_origins: list[str] = _parse_origins(
             os.environ.get("WORLD_MODEL_ALLOWED_ORIGINS", "")
         )
@@ -76,16 +118,20 @@ class SecurityConfig:
 
     @property
     def auth_enabled(self) -> bool:
-        return self.api_token is not None
+        return self.auth_mode == "cognito"
+
+    @property
+    def verifier(self) -> Optional[TokenVerifier]:
+        return self._verifier
 
     def log_summary(self) -> None:
-        if self.auth_enabled:
-            logger.info("Auth ENABLED (WORLD_MODEL_API_TOKEN set).")
+        if self.auth_enabled and self.cognito is not None:
+            self.cognito.log_summary()
         else:
             logger.warning(
-                "Auth DISABLED — WORLD_MODEL_API_TOKEN is not set. The inference "
-                "API is UNAUTHENTICATED. Set WORLD_MODEL_API_TOKEN before exposing "
-                "this endpoint to any untrusted network."
+                "Auth DISABLED via WORLD_MODEL_AUTH_MODE=disabled. The inference "
+                "API is UNAUTHENTICATED and anyone who can reach it can run GPU "
+                "inference. This is for local development only."
             )
         if self.allowed_origins:
             logger.info("CORS allowlist: %s", ", ".join(self.allowed_origins))
@@ -119,28 +165,81 @@ def _parse_int(raw: Optional[str], default: int) -> int:
 # =============================================================================
 
 
-def extract_token(auth_header: Optional[str], query_token: Optional[str]) -> Optional[str]:
-    """Pull a token from an ``Authorization`` header or ``?token=`` query param.
+# Browser WebSocket clients authenticate by offering two subprotocols: this
+# marker, then the access token (a JWT is a valid subprotocol token). The server
+# echoes the marker back — never the token — as the selected subprotocol, which
+# the browser requires before it will complete the handshake. Headers, unlike
+# the URL, are not written to ALB access logs.
+WS_BEARER_PROTOCOL = "world-model.bearer"
+
+
+def extract_token(auth_header: Optional[str], alt_token: Optional[str]) -> Optional[str]:
+    """Pull a token from an ``Authorization`` header, else from ``alt_token``.
 
     Accepts ``Bearer <token>`` (case-insensitive prefix) or a bare token value.
+    ``alt_token`` is the WebSocket subprotocol token (``ws_bearer_token``).
     """
     if auth_header:
         parts = auth_header.split(" ", 1)
         if len(parts) == 2 and parts[0].lower() == "bearer":
             return parts[1].strip()
         return auth_header.strip()
-    if query_token:
-        return query_token.strip()
+    if alt_token:
+        return alt_token.strip()
     return None
 
 
-def token_valid(config: SecurityConfig, presented: Optional[str]) -> bool:
-    """Constant-time comparison of a presented token against the configured one."""
+def ws_offered_protocols(header: Optional[str]) -> list[str]:
+    """The subprotocols a WebSocket client offered, in order."""
+    return [p.strip() for p in (header or "").split(",") if p.strip()]
+
+
+def ws_bearer_token(offered: list[str]) -> Optional[str]:
+    """The token following ``WS_BEARER_PROTOCOL`` in the offered subprotocols."""
+    try:
+        index = offered.index(WS_BEARER_PROTOCOL)
+    except ValueError:
+        return None
+    return offered[index + 1] if index + 1 < len(offered) else None
+
+
+# The principal every request maps to when auth is explicitly disabled. There is
+# only one caller in that mode (the developer), so ownership checks still hold.
+LOCAL_PRINCIPAL = "local"
+
+
+def authenticate(config: SecurityConfig, presented: Optional[str]) -> Optional[str]:
+    """Return the caller's principal for ``presented``, or None if it is rejected.
+
+    The principal is the token's ``sub`` — the user for an authorization-code
+    token, the app client for a client-credentials token — and is what job
+    ownership is keyed on. The HTTP middleware and the WebSocket handler share
+    this one decision point. The reason for rejection is logged here rather than
+    returned, because it must not reach the client: "token lacks scope X" and
+    "client Y is not allowed" are both useful to an attacker enumerating a pool.
+    """
     if not config.auth_enabled:
-        return True
+        return LOCAL_PRINCIPAL
+    verifier = config.verifier
+    if verifier is None:  # pragma: no cover - constructor guarantees this
+        raise AuthMisconfigured("Auth is enabled but no verifier was built")
     if not presented:
-        return False
-    return secrets.compare_digest(presented, config.api_token or "")
+        return None
+    try:
+        claims = verifier.verify(presented)
+    except AuthError as exc:
+        logger.info("Rejected token: %s", exc)
+        return None
+    principal = claims.get("sub") or claims.get("client_id")
+    if not principal:
+        logger.info("Rejected token: no sub or client_id to identify the caller")
+        return None
+    return str(principal)
+
+
+def token_valid(config: SecurityConfig, presented: Optional[str]) -> bool:
+    """True if ``presented`` is an acceptable Cognito access token."""
+    return authenticate(config, presented) is not None
 
 
 # =============================================================================
@@ -184,8 +283,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 class AuthMiddleware(BaseHTTPMiddleware):
     """Require a valid bearer token on all non-public HTTP routes.
 
-    No-op when auth is disabled. WebSocket auth is enforced separately in the
-    stream handler (BaseHTTPMiddleware does not see the ``websocket`` scope).
+    Only the ``Authorization`` header is read: a ``?token=`` query param is
+    ignored on HTTP, so a token cannot leak into ALB/proxy access logs, browser
+    history or a Referer header. On success the caller's principal is stored on
+    ``request.state.principal`` for the job-ownership checks.
+
+    With auth disabled every request is the single ``LOCAL_PRINCIPAL``. WebSocket
+    auth is enforced separately in the stream handler (BaseHTTPMiddleware does not
+    see the ``websocket`` scope).
     """
 
     def __init__(self, app, config: SecurityConfig):
@@ -193,17 +298,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.config = config
 
     async def dispatch(self, request: Request, call_next):
-        if not self.config.auth_enabled or request.method == "OPTIONS":
+        if not self.config.auth_enabled:
+            request.state.principal = LOCAL_PRINCIPAL
             return await call_next(request)
-        if request.url.path in PUBLIC_PATHS:
+        if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
             return await call_next(request)
 
-        presented = extract_token(
-            request.headers.get("authorization"),
-            request.query_params.get("token"),
+        principal = authenticate(
+            self.config, extract_token(request.headers.get("authorization"), None)
         )
-        if not token_valid(self.config, presented):
+        if principal is None:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        request.state.principal = principal
         return await call_next(request)
 
 

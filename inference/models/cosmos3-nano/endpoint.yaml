@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
 # Cosmos3-Nano — omnimodal world model (video gen, world sim, action policy)
 # Upstream: https://github.com/NVIDIA/Cosmos
 # Weights: nvidia/Cosmos3-Nano on HuggingFace (~32GB, open — no token required)
@@ -17,3 +20,11 @@ hf:
 ec2:
   instance: g6e.12xlarge
   volume_size: 200
+
+# --- Weights licence ---------------------------------------------------------
+# Verified 2026-09-21: HF reports `license: other` with
+# `license_name: openmdw1.1-license`. Permissive, but NOT Apache-2.0 and not
+# OSI-approved — read it before redistributing outputs. See docs/MODEL_LICENSES.md.
+license: OpenMDW-1.1
+license_url: https://openmdw.ai/license/1-1/
+license_restricted: false

@@ -18,11 +18,20 @@ export interface AppConfig {
   redirectSignOut: string;
   /** API Gateway base URL for REST API (e.g. https://<api-id>.execute-api.<region>.amazonaws.com/prod) */
   apiUrl?: string;
+  /** Optional Cognito federated identity provider name (e.g. a SAML/OIDC IdP
+   *  configured on the user pool). When unset, sign-in uses the Cognito hosted UI. */
+  identityProvider?: string;
   /** When true, skip Cognito auth and show the UI in demo/showcase mode */
   demoMode?: boolean;
   /** Shared bearer token for the inference endpoint (R1). Sent as
-   *  `Authorization: Bearer <token>` on REST calls and `?token=` on WebSockets.
+   *  `Authorization: Bearer <token>` on REST calls and as the
+   *  `world-model.bearer` subprotocol on WebSockets.
    *  Written by `./deploy.sh ui` from the SSM SecureString. Empty in demo mode. */
+  /**
+   * Cognito ACCESS token, if the UI holds one directly. Usually absent: the
+   * `./deploy.sh ui` dev proxy injects the Authorization header server-side so
+   * no token is ever written into the browser bundle.
+   */
   apiToken?: string;
   /** Which UI to render. Default 'worlds' renders the LobbyScreen (real-time worlds).
    *  'lingbot' renders the LingbotGenerator (async video gen against lingbot-fast endpoint).

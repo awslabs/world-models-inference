@@ -13,6 +13,12 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: CI only reads the repo. Actions are pinned to full commit
+# SHAs (tag in the trailing comment) so a moved or compromised tag cannot change
+# what runs here.
+permissions:
+  contents: read
+
 # Cancel superseded runs on the same ref.
 concurrency:
   group: ci-${{ github.ref }}
@@ -23,9 +29,9 @@ jobs:
     name: Python unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - name: Run tests (dev group installs fastapi/httpx so nothing silently skips)
         run: uv run --group dev python -m pytest tests/ -q
 
@@ -39,8 +45,8 @@ jobs:
       run:
         working-directory: cdk
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
       - run: npm ci
@@ -60,8 +66,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
       - run: npm ci
@@ -72,8 +78,43 @@ jobs:
     name: Shell script syntax
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: bash -n on deploy.sh
         run: bash -n deploy.sh
       - name: python compile scripts
         run: python3 -m py_compile scripts/build-image.py scripts/stage-weights.py
+
+  sbom:
+    name: SBOM + license policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.12.19"  # `uv export --format cyclonedx1.5` needs a recent uv; pinned so the job can't break on a release
+      # CycloneDX SBOMs for everything this repo ships: the frontend bundle, the
+      # CDK app, and the Python client/test tooling. `npm sbom` is built into npm.
+      - name: Generate SBOMs
+        run: |
+          mkdir -p sbom
+          (cd frontend && npm ci && npm sbom --sbom-format cyclonedx --omit dev > ../sbom/frontend.cdx.json)
+          (cd cdk && npm ci && npm sbom --sbom-format cyclonedx --omit dev > ../sbom/cdk.cdx.json)
+          uv export --format cyclonedx1.5 --frozen -o sbom/python.cdx.json
+          uv run --group dev --with pip-licenses==5.5.5 pip-licenses --format=json > sbom/python-licenses.json
+          # One SBOM rooted at the deliverable, so every dependency is reachable.
+          python3 scripts/sbom-merge.py sbom/frontend.cdx.json sbom/cdk.cdx.json sbom/python.cdx.json -o sbom/world-model-inference.cdx.json
+      # Includes the Python each cartridge's container installs, resolved on PyPI.
+      - name: License policy
+        run: >-
+          python3 scripts/license-check.py sbom/frontend.cdx.json sbom/cdk.cdx.json
+          --pip-licenses sbom/python-licenses.json
+          --requirements inference/lib/requirements.txt inference/models/*/requirements.txt
+          --dockerfiles inference/Dockerfile.default inference/models/*/Dockerfile
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom
+          path: sbom/

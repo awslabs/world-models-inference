@@ -3,11 +3,14 @@
 
 import * as cdk from 'aws-cdk-lib';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
+import { cartridgeRepositoryArns, ecrAuthStatement } from './constructs/iam';
 import { describeStack } from './solution';
 
 export class SharedStack extends cdk.Stack {
@@ -75,6 +78,17 @@ export class SharedStack extends cdk.Stack {
 
     const vpc = new ec2.Vpc(this, 'Vpc', {
       vpcName: 'world-model-vpc',
+      // GPU capacity is per-AZ, so more AZs means more chances of a p5 launch
+      // succeeding: we hit InsufficientInstanceCapacity in both 2a and 2b while
+      // AWS reported capacity in 2c and 2d, with no subnet there to use.
+      //
+      // Raising this on an existing VPC does NOT work: CDK re-slices the /16
+      // from the base, so the new public subnets are handed 10.0.2.0/24 and
+      // 10.0.3.0/24, which the current private subnets already own, and the
+      // update fails with "CIDR conflicts with another subnet". Widening the AZ
+      // span needs a fresh VPC (new CIDR or a rebuilt foundation), so it is a
+      // deliberate migration rather than a config tweak. Reserved capacity is
+      // the better answer for p5 in any case.
       maxAzs: 2,
       natGateways: 1,
       subnetConfiguration: [
@@ -119,7 +133,10 @@ export class SharedStack extends cdk.Stack {
     // --- IAM: EC2 Role + Instance Profile ---
 
     // ARNs for the two project buckets — used to scope S3 access instead of the
-    // account-wide AmazonS3FullAccess managed policy (H6).
+    // account-wide AmazonS3FullAccess managed policy (H6). Each bucket is named
+    // exactly; "/*" is the objects inside that one bucket (object-level actions
+    // need the object ARN), not a pattern over other buckets.
+    // Reference: https://docs.aws.amazon.com/AmazonS3/latest/userguide/security_iam_service-with-iam.html
     const bucketArns = [
       `arn:aws:s3:::${artifactsBucketName}`,
       `arn:aws:s3:::${artifactsBucketName}/*`,
@@ -146,70 +163,31 @@ export class SharedStack extends cdk.Stack {
       resources: bucketArns,
     }));
 
-    // Read the shared inference API token at boot (R1). Scoped to the single
-    // SecureString parameter; the instance injects it into the container env.
-    ec2Role.addToPolicy(new iam.PolicyStatement({
-      sid: 'ReadApiToken',
-      actions: ['ssm:GetParameter'],
-      resources: [
-        `arn:aws:ssm:${this.region}:${this.account}:parameter/world-model/security/api-token`,
-      ],
-    }));
+    // No ssm:GetParameter grant here any more. The instance used to read a shared
+    // SecureString API token at boot; with Cognito it receives only public
+    // identifiers (pool ID, client IDs, scope) in user data and verifies tokens
+    // against the pool's published JWKS. One fewer permission, and no secret on
+    // the instance to read or leak.
 
     const ec2Profile = new iam.CfnInstanceProfile(this, 'EC2Profile', {
       instanceProfileName: `WorldModelEC2Profile-${this.region}`,
       roles: [ec2Role.roleName],
     });
 
-    // --- IAM: SageMaker Execution Role ---
-
-    // Replaces AmazonSageMakerFullAccess (M5) and AmazonS3FullAccess (H6) with
-    // the minimal set a SageMaker execution role needs: pull the inference
-    // image from ECR, write logs/metrics, and read/write the project buckets.
-    const smRole = new iam.Role(this, 'SageMakerRole', {
-      roleName: `WorldModelSageMakerRole-${this.region}`,
-      assumedBy: new iam.ServicePrincipal('sagemaker.amazonaws.com'),
-    });
-
-    smRole.addToPolicy(new iam.PolicyStatement({
-      sid: 'S3ProjectBuckets',
-      actions: ['s3:GetObject', 's3:PutObject', 's3:ListBucket'],
-      resources: bucketArns,
-    }));
-    smRole.addToPolicy(new iam.PolicyStatement({
-      sid: 'EcrPull',
-      actions: [
-        'ecr:GetAuthorizationToken',
-        'ecr:BatchCheckLayerAvailability',
-        'ecr:GetDownloadUrlForLayer',
-        'ecr:BatchGetImage',
-      ],
-      resources: ['*'],  // GetAuthorizationToken requires *; image pulls are gated by repo policy
-    }));
-    smRole.addToPolicy(new iam.PolicyStatement({
-      sid: 'CloudWatchLogsAndMetrics',
-      actions: [
-        'logs:CreateLogGroup',
-        'logs:CreateLogStream',
-        'logs:PutLogEvents',
-        'logs:DescribeLogStreams',
-        'cloudwatch:PutMetricData',
-      ],
-      resources: ['*'],
-    }));
+    // No foundation-level SageMaker execution role: each SageMaker endpoint gets
+    // its own role scoped to its one image repository, log group and the project
+    // VPC (constructs/sagemaker.ts), so there is no shared role to over-grant.
 
     // --- CodeBuild ---
 
     // CodeBuild stages weights to the artifacts bucket and pushes images to
-    // ECR. Scope S3 to the project buckets (H6) instead of AmazonS3FullAccess;
-    // keep the managed ECR-PowerUser policy for image pushes and add explicit
-    // CloudWatch Logs for build output.
+    // ECR. Every grant is scoped to this project's resources: S3 to the project
+    // buckets (H6), ECR to each catalogued cartridge's repository (replacing the
+    // account-wide AmazonEC2ContainerRegistryPowerUser managed policy), and
+    // logs to the two build projects' log groups.
     const buildRole = new iam.Role(this, 'CodeBuildRole', {
       roleName: `WorldModelCodeBuildRole-${this.region}`,
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonEC2ContainerRegistryPowerUser'),
-      ],
     });
 
     buildRole.addToPolicy(new iam.PolicyStatement({
@@ -217,11 +195,53 @@ export class SharedStack extends cdk.Stack {
       actions: ['s3:GetObject', 's3:PutObject', 's3:ListBucket', 's3:DeleteObject'],
       resources: bucketArns,
     }));
+    // Lets a build confirm it is talking to this account's bucket (bucket
+    // ownership/region) before trusting what it reads or writes there.
     buildRole.addToPolicy(new iam.PolicyStatement({
-      sid: 'CloudWatchLogs',
-      actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
-      resources: ['*'],
+      sid: 'S3ProjectBucketOwnership',
+      actions: ['s3:GetBucketAcl', 's3:GetBucketLocation'],
+      resources: [`arn:aws:s3:::${artifactsBucketName}`, `arn:aws:s3:::${outputsBucketName}`],
     }));
+    buildRole.addToPolicy(ecrAuthStatement());
+    buildRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'EcrPushPullProjectRepos',
+      actions: [
+        'ecr:BatchCheckLayerAvailability',
+        'ecr:GetDownloadUrlForLayer',
+        'ecr:BatchGetImage',
+        'ecr:InitiateLayerUpload',
+        'ecr:UploadLayerPart',
+        'ecr:CompleteLayerUpload',
+        'ecr:PutImage',
+      ],
+      resources: cartridgeRepositoryArns(this),
+    }));
+    // The two build projects' own log groups. ":log-stream:*" is every stream in
+    // those groups: CodeBuild names one stream per build, by build ID.
+    // Reference: https://docs.aws.amazon.com/codebuild/latest/userguide/setting-up-service-role.html
+    const buildLogGroups = ['world-model-weights', 'world-model-image'].map(
+      (project) => `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/codebuild/${project}`,
+    );
+    buildRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'CloudWatchLogsBuildProjects',
+      actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
+      resources: [...buildLogGroups, ...buildLogGroups.map((g) => `${g}:log-stream:*`)],
+    }));
+
+    // HuggingFace token for gated weight repos. scripts/stage-weights.py writes the
+    // operator's HF_TOKEN here and passes CodeBuild a SECRETS_MANAGER reference,
+    // so the token never appears as a PLAINTEXT override on the build record.
+    // Only the build role can read it. The script writes the token just before a
+    // build and clears it when the build ends, so the current and previous
+    // versions hold a real credential only for one run (an older, unlabelled
+    // version stays readable by explicit version ID until it ages out). No rotation schedule: a HuggingFace token cannot be rotated
+    // through any API, so automatic rotation is not possible for this secret.
+    // Referenced by name (world-model/hf-token), so no ARN needs publishing.
+    const hfTokenSecret = new secretsmanager.Secret(this, 'HfTokenSecret', {
+      secretName: 'world-model/hf-token', // pragma: allowlist secret - a secret's name, not its value
+      description: 'HuggingFace token for staging gated model weights (written by scripts/stage-weights.py)',
+    });
+    hfTokenSecret.grantRead(buildRole);
 
     const defaultSpec = codebuild.BuildSpec.fromObject({
       version: '0.2',
@@ -255,6 +275,105 @@ export class SharedStack extends cdk.Stack {
       },
       timeout: cdk.Duration.minutes(60),
       buildSpec: defaultSpec,
+    });
+
+    // --- Cognito (authentication) ---
+    //
+    // The inference API used to authenticate with a shared static bearer token
+    // that deploy.sh generated into SSM and the app string-compared. That is a
+    // bespoke credential scheme — "a Cognito alternative" in AWS security-review
+    // terms — which makes a reusable solution ineligible for an Enhanced DSR and
+    // forces a full AppSec review. It was also a single long-lived secret shared
+    // by every caller, with no expiry and no way to revoke one client.
+    //
+    // This pool replaces it. The app verifies pool-issued access tokens
+    // (inference/lib/cognito.py) and owns no credential scheme of its own.
+    //
+    // It lives in the foundation stack, not per-model, so every cartridge shares
+    // one identity boundary and adding a cartridge does not mint a new pool.
+    const userPool = new cognito.UserPool(this, 'UserPool', {
+      userPoolName: 'world-model-inference',
+      selfSignUpEnabled: false, // operators are invited; this is not a public app
+      signInAliases: { email: true },
+      passwordPolicy: {
+        minLength: 12,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      // RETAIN: destroying the pool would delete every operator account and
+      // silently break running deployments that still hold its tokens.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      // Threat protection in audit mode: record risk signals (impossible travel,
+      // credential stuffing) without blocking a booth demo on a false positive.
+      standardThreatProtectionMode: cognito.StandardThreatProtectionMode.AUDIT_ONLY,
+    });
+
+    // A resource server gives us a scope to authorise on, so a token proves
+    // "may invoke inference" rather than merely "signed in somewhere".
+    const resourceServer = userPool.addResourceServer('ResourceServer', {
+      identifier: 'world-model',
+      userPoolResourceServerName: 'World Model Inference API',
+      scopes: [
+        new cognito.ResourceServerScope({
+          scopeName: 'invoke',
+          scopeDescription: 'Run inference against a deployed world model',
+        }),
+      ],
+    });
+    const invokeScope = cognito.OAuthScope.resourceServer(resourceServer, {
+      scopeName: 'invoke',
+      scopeDescription: 'Run inference against a deployed world model',
+    });
+
+    // A Hosted UI domain is required for the authorization-code and
+    // client-credentials flows below. The prefix must be globally unique, so it
+    // is account/region qualified.
+    const domainPrefix = `world-model-${this.account}-${this.region}`;
+    const userPoolDomain = userPool.addDomain('UserPoolDomain', {
+      cognitoDomain: { domainPrefix },
+    });
+
+    // Browser client: authorization code + PKCE, no client secret. A public
+    // client must never hold a secret — it ships to the browser.
+    const callbackUrls = (this.node.tryGetContext('callbackUrls') as string | undefined)
+      ?.split(',')
+      .map(u => u.trim())
+      .filter(Boolean) ?? ['http://localhost:3000/'];
+    const browserClient = userPool.addClient('BrowserClient', {
+      userPoolClientName: 'world-model-browser',
+      generateSecret: false,
+      authFlows: { userSrp: true },
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [cognito.OAuthScope.OPENID, invokeScope],
+        callbackUrls,
+        logoutUrls: callbackUrls,
+      },
+      // Short-lived by design. The token travels in a WebSocket query string on
+      // the real-time path, which lands in ALB access logs; an hour of exposure
+      // is a different proposition from the previous never-expiring secret.
+      accessTokenValidity: cdk.Duration.hours(1),
+      idTokenValidity: cdk.Duration.hours(1),
+      refreshTokenValidity: cdk.Duration.days(1),
+      preventUserExistenceErrors: true,
+      enableTokenRevocation: true,
+    });
+
+    // Machine client: client credentials, no user involved. This is what
+    // `deploy.sh bench` and CI use, and it is why automation no longer needs a
+    // shared human-held secret.
+    const machineClient = userPool.addClient('MachineClient', {
+      userPoolClientName: 'world-model-machine',
+      generateSecret: true,
+      oAuth: {
+        flows: { clientCredentials: true },
+        scopes: [invokeScope],
+      },
+      accessTokenValidity: cdk.Duration.hours(1),
+      enableTokenRevocation: true,
     });
 
     // --- SSM Parameters (foundation registry) ---
@@ -294,11 +413,6 @@ export class SharedStack extends cdk.Stack {
       stringValue: ec2Role.roleName,
     });
 
-    new ssm.StringParameter(this, 'ParamSMRoleArn', {
-      parameterName: '/world-model/foundation/sm-role-arn',
-      stringValue: smRole.roleArn,
-    });
-
     new ssm.StringParameter(this, 'ParamArtifactsBucket', {
       parameterName: '/world-model/foundation/artifacts-bucket',
       stringValue: artifactsBucket.bucketName,
@@ -317,6 +431,40 @@ export class SharedStack extends cdk.Stack {
     new ssm.StringParameter(this, 'ParamImageProject', {
       parameterName: '/world-model/foundation/image-project',
       stringValue: imageProject.projectName,
+    });
+
+    // Cognito registry. deploy.sh reads these and passes them to the container as
+    // WORLD_MODEL_COGNITO_* env vars. The machine client's SECRET is deliberately
+    // absent: it is readable from the Cognito API by an authorised caller and must
+    // not be copied into a plaintext SSM parameter.
+    new ssm.StringParameter(this, 'ParamUserPoolId', {
+      parameterName: '/world-model/foundation/cognito-user-pool-id',
+      stringValue: userPool.userPoolId,
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoClientIds', {
+      parameterName: '/world-model/foundation/cognito-client-ids',
+      stringValue: `${browserClient.userPoolClientId},${machineClient.userPoolClientId}`,
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoBrowserClientId', {
+      parameterName: '/world-model/foundation/cognito-browser-client-id',
+      stringValue: browserClient.userPoolClientId,
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoMachineClientId', {
+      parameterName: '/world-model/foundation/cognito-machine-client-id',
+      stringValue: machineClient.userPoolClientId,
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoScope', {
+      parameterName: '/world-model/foundation/cognito-scope',
+      stringValue: 'world-model/invoke',
+    });
+
+    new ssm.StringParameter(this, 'ParamCognitoDomain', {
+      parameterName: '/world-model/foundation/cognito-domain',
+      stringValue: userPoolDomain.baseUrl(),
     });
   }
 }

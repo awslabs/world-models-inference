@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
 echo "=== GPU Info ==="
 nvidia-smi 2>&1 || echo "nvidia-smi not available"
 echo "================"
