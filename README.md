@@ -13,7 +13,7 @@ The flagship endpoint is **`lingbot-fast`**, an 8-GPU video generator built on
 ## Before you deploy
 
 1. **AWS credentials** — however you normally configure them.
-2. **Tooling** — `aws` CLI v2, `node` ≥ 18, `npm`.
+2. **Tooling** — a current `aws` CLI (v2 from mid-2025 or later: image builds use ECR tag-immutability exclusion filters, which 2.22 rejects), `node` ≥ 18, `npm`.
 3. **IAM permissions** — to create EC2 instances, IAM roles, S3 buckets, security
    groups, and (for SageMaker) endpoints. CDK creates everything via CloudFormation.
 4. **GPU capacity** — the most common blocker, and it is AZ-specific. To prove the
@@ -96,8 +96,10 @@ instead of Hugging Face.
 `./deploy.sh` restricts ALB ingress to your own public IP and provisions an Amazon
 Cognito user pool, so the endpoint is authenticated by default — the service verifies
 Cognito access tokens and holds no credential scheme of its own. The GPU instance
-sits in a private subnet with no public IP. The ALB serves **plain HTTP** unless you
-supply an ACM certificate via `CERTIFICATE_ARN`.
+sits in a private subnet with no public IP. EC2 endpoints are **HTTPS by default**:
+through a CloudFront distribution on its own `*.cloudfront.net` name (no domain
+needed), or under your own domain with `CERTIFICATE_ARN`, `ENDPOINT_DOMAIN` and
+`HOSTED_ZONE_ID`. Plain HTTP needs an explicit `ALLOW_PLAINTEXT=1`.
 
 Before exposing anything to untrusted networks, read
 **[Security](docs/SECURITY.md)**. To report a vulnerability, see
@@ -113,6 +115,18 @@ Before exposing anything to untrusted networks, read
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Failure modes, GPU capacity, Capacity Block Reservations |
 | [Security](docs/SECURITY.md) | Auth, network posture, hardening for production |
 | [Model licences](docs/MODEL_LICENSES.md) | Per-cartridge weights/code licences and the deploy-time gate |
+
+## Contributing
+
+Contributions are welcome — bug reports, fixes, docs and new model cartridges. Read
+**[CONTRIBUTING.md](CONTRIBUTING.md)** for the development setup, the checks a pull
+request must pass, and the licence rules every cartridge has to meet.
+
+## Contributors
+
+- Babs Khalidson — Machine Learning Engineer
+- Aleksei Iancheruk — Applied Scientist
+- Giuseppe Mascellaro — Senior Applied Scientist
 
 ## License
 

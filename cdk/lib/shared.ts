@@ -101,10 +101,9 @@ export class SharedStack extends cdk.Stack {
 
     // --- Security Groups ---
 
-    // The ALB accepts HTTP:80 and HTTPS:443. TLS is enabled per-deployment by
-    // passing an ACM certificate ARN (-c certificateArn=...): the listener then
-    // serves 443 and redirects 80 → 443 (M1). Without a cert it stays HTTP-only
-    // for local/demo use.
+    // The ALB accepts HTTP:80 and HTTPS:443. TLS is per-deployment (see
+    // constructs/ec2.ts): CloudFront by default, an ACM certificate under a
+    // custom domain, or plain HTTP only with -c allowPlaintext=true.
     //
     // Ingress is restricted to `allowedCidr` (context) rather than 0.0.0.0/0.
     // deploy.sh defaults this to the deployer's own public IP (/32), so the
@@ -180,30 +179,66 @@ export class SharedStack extends cdk.Stack {
 
     // --- CodeBuild ---
 
-    // CodeBuild stages weights to the artifacts bucket and pushes images to
-    // ECR. Every grant is scoped to this project's resources: S3 to the project
-    // buckets (H6), ECR to each catalogued cartridge's repository (replacing the
-    // account-wide AmazonEC2ContainerRegistryPowerUser managed policy), and
-    // logs to the two build projects' log groups.
-    const buildRole = new iam.Role(this, 'CodeBuildRole', {
-      roleName: `WorldModelCodeBuildRole-${this.region}`,
+    // Two builds, two roles. They used to share one role, so code running in the
+    // weights build (third-party pip packages, a model repo's hubconf.py) held
+    // ecr:PutImage on every cartridge repo and could overwrite any image (EDSR
+    // WM-015). Now the weights role can write weights and nothing else, and the
+    // image role can push images and read its source zip, and nothing else.
+    // The two build projects' own log groups. ":log-stream:*" is every stream in
+    // a group: CodeBuild names one stream per build, by build ID.
+    // Reference: https://docs.aws.amazon.com/codebuild/latest/userguide/setting-up-service-role.html
+    const buildLogStatement = (project: string) => {
+      const group = `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/codebuild/${project}`;
+      return new iam.PolicyStatement({
+        sid: 'CloudWatchLogsBuildProject',
+        actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
+        resources: [group, `${group}:log-stream:*`],
+      });
+    };
+    const artifactsArn = `arn:aws:s3:::${artifactsBucketName}`;
+    // build-image.py uploads each image build's source zip here with the
+    // operator's own credentials; the image build only reads it.
+    const buildSourcesArn = `${artifactsArn}/_builds/*`;
+
+    // Weights: download from Hugging Face / GitHub, sync to the artifacts bucket.
+    const weightsRole = new iam.Role(this, 'WeightsBuildRole', {
+      roleName: `WorldModelWeightsBuildRole-${this.region}`,
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
     });
+    weightsRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'S3ArtifactsWeights',
+      actions: ['s3:GetObject', 's3:PutObject', 's3:ListBucket'],
+      resources: [artifactsArn, `${artifactsArn}/*`],
+    }));
+    // The image build's source zips live in the same bucket. Without this deny a
+    // weights build could swap the zip the next image build runs as source.
+    weightsRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'DenyImageBuildSources',
+      effect: iam.Effect.DENY,
+      actions: ['s3:PutObject', 's3:DeleteObject'],
+      resources: [buildSourcesArn],
+    }));
+    weightsRole.addToPolicy(buildLogStatement('world-model-weights'));
 
-    buildRole.addToPolicy(new iam.PolicyStatement({
-      sid: 'S3ProjectBuckets',
-      actions: ['s3:GetObject', 's3:PutObject', 's3:ListBucket', 's3:DeleteObject'],
-      resources: bucketArns,
+    // Image: read the source zip, build, push to the cartridge repositories.
+    const imageRole = new iam.Role(this, 'ImageBuildRole', {
+      roleName: `WorldModelImageBuildRole-${this.region}`,
+      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
+    });
+    imageRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'S3ImageBuildSources',
+      actions: ['s3:GetObject', 's3:GetObjectVersion'],
+      resources: [buildSourcesArn],
     }));
     // Lets a build confirm it is talking to this account's bucket (bucket
-    // ownership/region) before trusting what it reads or writes there.
-    buildRole.addToPolicy(new iam.PolicyStatement({
+    // ownership/region) before trusting what it reads there.
+    imageRole.addToPolicy(new iam.PolicyStatement({
       sid: 'S3ProjectBucketOwnership',
       actions: ['s3:GetBucketAcl', 's3:GetBucketLocation'],
-      resources: [`arn:aws:s3:::${artifactsBucketName}`, `arn:aws:s3:::${outputsBucketName}`],
+      resources: [artifactsArn, `arn:aws:s3:::${outputsBucketName}`],
     }));
-    buildRole.addToPolicy(ecrAuthStatement());
-    buildRole.addToPolicy(new iam.PolicyStatement({
+    imageRole.addToPolicy(ecrAuthStatement());
+    imageRole.addToPolicy(new iam.PolicyStatement({
       sid: 'EcrPushPullProjectRepos',
       actions: [
         'ecr:BatchCheckLayerAvailability',
@@ -216,22 +251,12 @@ export class SharedStack extends cdk.Stack {
       ],
       resources: cartridgeRepositoryArns(this),
     }));
-    // The two build projects' own log groups. ":log-stream:*" is every stream in
-    // those groups: CodeBuild names one stream per build, by build ID.
-    // Reference: https://docs.aws.amazon.com/codebuild/latest/userguide/setting-up-service-role.html
-    const buildLogGroups = ['world-model-weights', 'world-model-image'].map(
-      (project) => `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/codebuild/${project}`,
-    );
-    buildRole.addToPolicy(new iam.PolicyStatement({
-      sid: 'CloudWatchLogsBuildProjects',
-      actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
-      resources: [...buildLogGroups, ...buildLogGroups.map((g) => `${g}:log-stream:*`)],
-    }));
+    imageRole.addToPolicy(buildLogStatement('world-model-image'));
 
     // HuggingFace token for gated weight repos. scripts/stage-weights.py writes the
     // operator's HF_TOKEN here and passes CodeBuild a SECRETS_MANAGER reference,
     // so the token never appears as a PLAINTEXT override on the build record.
-    // Only the build role can read it. The script writes the token just before a
+    // Only the weights build role can read it. The script writes the token just before a
     // build and clears it when the build ends, so the current and previous
     // versions hold a real credential only for one run (an older, unlabelled
     // version stays readable by explicit version ID until it ages out). No rotation schedule: a HuggingFace token cannot be rotated
@@ -241,7 +266,7 @@ export class SharedStack extends cdk.Stack {
       secretName: 'world-model/hf-token', // pragma: allowlist secret - a secret's name, not its value
       description: 'HuggingFace token for staging gated model weights (written by scripts/stage-weights.py)',
     });
-    hfTokenSecret.grantRead(buildRole);
+    hfTokenSecret.grantRead(weightsRole);  // weights only: the image build never needs it
 
     const defaultSpec = codebuild.BuildSpec.fromObject({
       version: '0.2',
@@ -256,7 +281,7 @@ export class SharedStack extends cdk.Stack {
     // is generous because a 60 GB pull plus S3 sync is slow.
     const weightsProject = new codebuild.Project(this, 'WeightsProject', {
       projectName: 'world-model-weights',
-      role: buildRole,
+      role: weightsRole,
       environment: {
         buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2_STANDARD_3_0,
         computeType: codebuild.ComputeType.X2_LARGE,
@@ -267,7 +292,7 @@ export class SharedStack extends cdk.Stack {
 
     const imageProject = new codebuild.Project(this, 'ImageProject', {
       projectName: 'world-model-image',
-      role: buildRole,
+      role: imageRole,
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
         computeType: codebuild.ComputeType.LARGE,

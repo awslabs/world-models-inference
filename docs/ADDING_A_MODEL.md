@@ -155,9 +155,9 @@ Drop one in the model directory and it takes precedence — for genuinely custom
 builds: native CUDA extensions, upstream git clones, pinned toolchains. See `lyra-2`
 for a worked example.
 
-`./deploy.sh list` shows which path each model uses. Set `REBUILD_IMAGE=1` to force a
-rebuild after changing inference code, since an unchanged image tag is reused by
-default.
+`./deploy.sh list` shows which path each model uses. Bump `version:` in `endpoint.yaml` to rebuild
+after changing inference code: image tags are immutable, so an existing tag is
+always reused.
 
 ## Restricted licences
 

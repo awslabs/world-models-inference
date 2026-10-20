@@ -14,7 +14,12 @@
  *   target   — ec2 | sagemaker
  *   name     — deployment name (defaults to model)
  *   capacity — Capacity Block reservation ID (EC2 only)
- *   certificateArn — ACM cert ARN; enables HTTPS on the EC2 ALB (M1)
+ *   certificateArn, endpointDomain, hostedZoneId
+ *                  — HTTPS on the EC2 ALB under a custom name (Route 53 alias)
+ *   allowPlaintext — 'true' serves plain HTTP from the ALB. Without it, and
+ *                    without a certificate, EC2 endpoints get HTTPS through a
+ *                    CloudFront distribution (no domain needed)
+ *   allowedCidr    — IPv4 CIDR of viewers CloudFront admits
  *   authMode       — 'cognito' (default in the container) or 'disabled'
  *   cognitoUserPoolId, cognitoClientIds, cognitoScope
  *                  — Cognito settings passed to the container. Not secret; the
@@ -22,6 +27,8 @@
  *   allowedOrigins — CORS allowlist passed to the container (R1)
  *   rateLimit      — per-IP req/min on inference routes (R1)
  *   notificationEmail — email subscribed to EC2 scaling-event notifications
+ *   imageDigest    — sha256:... of the image to run (deploy.sh resolves it from
+ *                    the version tag); without it the version tag is used
  */
 import * as cdk from 'aws-cdk-lib';
 import { SharedStack } from '../lib/shared';
@@ -50,17 +57,32 @@ if (model) {
       `Invalid deployment name '${name}': use letters, digits and single inner hyphens, at most 26 characters`,
     );
   }
-  const capacity = app.node.tryGetContext('capacity') as string | undefined;
-  const capacitySubnets = app.node.tryGetContext('capacitySubnets') as string | undefined;
-  const instanceTypeOverride = app.node.tryGetContext('instanceType') as string | undefined;
-  const certificateArn = app.node.tryGetContext('certificateArn') as string | undefined;
-  const authMode = app.node.tryGetContext('authMode') as string | undefined;
-  const cognitoUserPoolId = app.node.tryGetContext('cognitoUserPoolId') as string | undefined;
-  const cognitoClientIds = app.node.tryGetContext('cognitoClientIds') as string | undefined;
-  const cognitoScope = app.node.tryGetContext('cognitoScope') as string | undefined;
-  const allowedOrigins = app.node.tryGetContext('allowedOrigins') as string | undefined;
-  const rateLimit = app.node.tryGetContext('rateLimit') as string | undefined;
-  const notificationEmail = app.node.tryGetContext('notificationEmail') as string | undefined;
+  // Context values reach the instance's boot environment, the token verifier
+  // and resource names. deploy.sh checks them too, but `npx cdk deploy` can be run
+  // without it, so the app refuses anything outside each value's real shape.
+  const ctx = (key: string, re: RegExp): string | undefined => {
+    const v = app.node.tryGetContext(key) as string | undefined;
+    if (v !== undefined && !re.test(String(v))) {
+      throw new Error(`Invalid context ${key}: ${JSON.stringify(v)}`);
+    }
+    return v === undefined ? undefined : String(v);
+  };
+  const capacity = ctx('capacity', /^cr-[0-9a-f]{8,17}$/);
+  const capacitySubnets = ctx('capacitySubnets', /^subnet-[0-9a-f]{8,17}(,subnet-[0-9a-f]{8,17})*$/);
+  const instanceTypeOverride = ctx('instanceType', /^[a-z][a-z0-9-]*\.[a-z0-9]+$/);
+  const certificateArn = ctx('certificateArn', /^arn:aws[a-z-]*:acm:[a-z0-9-]+:\d{12}:certificate\/[0-9a-f-]{36}$/);
+  const endpointDomain = ctx('endpointDomain', /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/);
+  const hostedZoneId = ctx('hostedZoneId', /^Z[A-Z0-9]{1,32}$/);
+  const allowPlaintext = ctx('allowPlaintext', /^(true|false)$/) === 'true';
+  const allowedCidr = ctx('allowedCidr', /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/);
+  const authMode = ctx('authMode', /^(cognito|disabled)$/);
+  const cognitoUserPoolId = ctx('cognitoUserPoolId', /^[a-z]{2}(-[a-z]+)+-\d+_[A-Za-z0-9]+$/);
+  const cognitoClientIds = ctx('cognitoClientIds', /^[A-Za-z0-9]+(,[A-Za-z0-9]+)*$/);
+  const cognitoScope = ctx('cognitoScope', /^[A-Za-z0-9._~:\/-]+$/);
+  const allowedOrigins = ctx('allowedOrigins', /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?(,https?:\/\/[A-Za-z0-9.-]+(:\d+)?)*$/);
+  const rateLimit = ctx('rateLimit', /^\d{1,6}$/);
+  const imageDigest = ctx('imageDigest', /^sha256:[0-9a-f]{64}$/);
+  const notificationEmail = ctx('notificationEmail', /^[^\s@,;'"`$\\]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/);
 
   new ModelStack(app, `WorldModel-${name}`, {
     env,
@@ -72,6 +94,10 @@ if (model) {
     capacitySubnetIds: capacitySubnets,
     instanceTypeOverride,
     certificateArn,
+    endpointDomain,
+    hostedZoneId,
+    allowPlaintext,
+    allowedCidr,
     authMode,
     cognitoUserPoolId,
     cognitoClientIds,
@@ -79,5 +105,6 @@ if (model) {
     allowedOrigins,
     rateLimit,
     notificationEmail,
+    imageDigest,
   });
 }

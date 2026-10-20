@@ -81,6 +81,21 @@ read_foundation_param() {
     --query Parameter.Value --output text 2>/dev/null || true
 }
 
+# SSM values reach a root boot script, a `curl -u` target and the token
+# verifier, so each must match the shape it legitimately has. Anyone who can
+# write /world-model/foundation/* must not get to choose what those run.
+POOL_RE='^[a-z]{2}(-[a-z]+)+-[0-9]+_[A-Za-z0-9]+$'
+CLIENT_RE='^[A-Za-z0-9]+$'
+CLIENTS_RE='^[A-Za-z0-9]+(,[A-Za-z0-9]+)*$'
+SCOPE_RE='^[A-Za-z0-9._~:/-]+$'
+DOMAIN_RE='^https://[a-z0-9-]+\.auth\.[a-z0-9-]+\.amazoncognito\.com$'
+check_shape() {  # check_shape <param-name> <value> <regex>
+  if [[ ! "$2" =~ $3 ]]; then
+    echo "ERROR: $1 has an unexpected value; refusing to use it." >&2
+    exit 1
+  fi
+}
+
 # Mint a machine access token via the client-credentials grant.
 #
 # This is how `bench` and CI authenticate: no user, no interactive login, and no
@@ -90,7 +105,7 @@ read_foundation_param() {
 # Printed on stdout. Callers MUST NOT pass it as a command-line argument — it
 # would be visible in `ps` to every user on the box; use an env var.
 mint_machine_token() {
-  local region pool client_id domain secret
+  local region pool client_id domain scope secret
   region=$(get_region)
   pool=$(read_foundation_param "$COGNITO_POOL_PARAM")
   client_id=$(read_foundation_param "$COGNITO_MACHINE_CLIENT_PARAM")
@@ -100,6 +115,12 @@ mint_machine_token() {
     echo "Cognito is not provisioned — run './deploy.sh deploy ...' first." >&2
     return 1
   fi
+  # The domain receives the permanent client secret below, so it has to be a
+  # Cognito hosted-UI domain and nothing else.
+  check_shape "$COGNITO_POOL_PARAM" "$pool" "$POOL_RE"
+  check_shape "$COGNITO_MACHINE_CLIENT_PARAM" "$client_id" "$CLIENT_RE"
+  check_shape "$COGNITO_DOMAIN_PARAM" "$domain" "$DOMAIN_RE"
+  check_shape "$COGNITO_SCOPE_PARAM" "$scope" "$SCOPE_RE"
   secret=$(aws cognito-idp describe-user-pool-client \
     --user-pool-id "$pool" --client-id "$client_id" --region "$region" \
     --query 'UserPoolClient.ClientSecret' --output text 2>/dev/null) || true
@@ -168,6 +189,16 @@ ensure_foundation() {
   else
     echo "  ALB ingress restricted to $allowed_cidr (from ALLOWED_CIDR)."
   fi
+  check_shape "ALLOWED_CIDR" "$allowed_cidr" '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$'
+  # A world-open endpoint must at least be encrypted. HTTPS comes from either a
+  # certificate or the default CloudFront edge; only ALLOW_PLAINTEXT removes it.
+  if [ "$allowed_cidr" = "0.0.0.0/0" ] && [ "${ALLOW_PLAINTEXT:-}" = "1" ]; then
+    echo "ERROR: ALLOWED_CIDR=0.0.0.0/0 cannot be combined with ALLOW_PLAINTEXT=1." >&2
+    exit 1
+  fi
+  # The model stack enforces the same CIDR at the CloudFront edge, where the
+  # viewer's address is still visible (the ALB only sees CloudFront's).
+  RESOLVED_ALLOWED_CIDR="$allowed_cidr"
 
   (cd "$CDK_DIR" && npx cdk deploy WorldModelFoundation --require-approval never \
     -c "importExistingBuckets=$import_buckets" \
@@ -367,6 +398,13 @@ cmd_ui() {
   else
     echo "Found endpoint: $url"
   fi
+  # The proxy sends the machine token to this URL, so it must be HTTPS unless
+  # someone decided otherwise for this endpoint.
+  if [[ "$url" == http://* ]] && [ "${ALLOW_PLAINTEXT:-}" != "1" ]; then
+    echo "ERROR: $url is plain HTTP, and the proxy would send the token over it unencrypted." >&2
+    echo "       Redeploy without ALLOW_PLAINTEXT (HTTPS via CloudFront), or set ALLOW_PLAINTEXT=1." >&2
+    exit 1
+  fi
 
   # Write config.js with the endpoint URL
   if [ ! -d "$FRONTEND_DIR/public" ]; then
@@ -385,7 +423,7 @@ cmd_ui() {
   # secret read straight out of SSM.
   local api_token=""
   if [ -n "$url" ]; then
-    api_token=$(mint_machine_token 2>/dev/null || true)
+    api_token=$(mint_machine_token || true)
     if [ -z "$api_token" ]; then
       echo "  ⚠  Could not mint a Cognito token; the proxy will call the endpoint" >&2
       echo "     unauthenticated and a secured endpoint will answer 401." >&2
@@ -416,6 +454,10 @@ cmd_ui() {
   cognito_pool_id=$(read_foundation_param "$COGNITO_POOL_PARAM")
   cognito_browser_client=$(read_foundation_param "/world-model/foundation/cognito-browser-client-id")
   cognito_domain=$(read_foundation_param "$COGNITO_DOMAIN_PARAM")
+  # These are written into a script the browser executes.
+  [ -n "$cognito_pool_id" ] && check_shape "$COGNITO_POOL_PARAM" "$cognito_pool_id" "$POOL_RE"
+  [ -n "$cognito_browser_client" ] && check_shape "cognito-browser-client-id" "$cognito_browser_client" "$CLIENT_RE"
+  [ -n "$cognito_domain" ] && check_shape "$COGNITO_DOMAIN_PARAM" "$cognito_domain" "$DOMAIN_RE"
 
   cat > "$FRONTEND_DIR/public/config.js" <<CONF
 window.APP_CONFIG = {
@@ -449,7 +491,7 @@ CONF
 
   if [ -n "$url" ]; then
     echo "Starting UI on http://localhost:3000 → proxying to $url (token injected server-side)"
-    echo "  (if 3000 is taken vite picks the next free port — use the URL it prints below)"
+    echo "  (port 3000 is required: the proxy only authenticates requests from that origin)"
     (cd "$FRONTEND_DIR" && WM_PROXY_TARGET="$url" WM_PROXY_TOKEN="$api_token" npm run dev)
   else
     echo "Starting UI at http://localhost:3000 (demo mode — no live endpoint)"
@@ -515,6 +557,28 @@ cmd_deploy() {
   # Restricted-license models require acknowledgement before deploy.
   check_license "$model"
 
+  # Transport, checked before anything is built or deployed. EC2 endpoints are
+  # HTTPS by default (EDSR WM-002): under a custom domain when CERTIFICATE_ARN is
+  # set, otherwise through a CloudFront distribution on its own *.cloudfront.net
+  # name, which needs no domain at all. Plain HTTP takes ALLOW_PLAINTEXT=1.
+  if [ "$target" = "ec2" ]; then
+    if [ -n "${CERTIFICATE_ARN:-}" ]; then
+      if [ -z "${ENDPOINT_DOMAIN:-}" ] || [ -z "${HOSTED_ZONE_ID:-}" ]; then
+        echo "ERROR: CERTIFICATE_ARN needs ENDPOINT_DOMAIN and HOSTED_ZONE_ID: an ACM certificate" >&2
+        echo "       cannot cover the ALB's AWS-assigned DNS name. Unset all three to get" >&2
+        echo "       HTTPS through CloudFront instead." >&2
+        exit 1
+      fi
+      echo "  TLS: ACM certificate on the ALB, served as https://$ENDPOINT_DOMAIN"
+    elif [ "${ALLOW_PLAINTEXT:-}" = "1" ]; then
+      echo "  ⚠  ALLOW_PLAINTEXT=1: the ALB serves plain HTTP. Tokens and outputs cross the" >&2
+      echo "     network unencrypted. Use only for a short-lived test endpoint." >&2
+    else
+      echo "  TLS: CloudFront (https://<id>.cloudfront.net). Set CERTIFICATE_ARN, ENDPOINT_DOMAIN"
+      echo "       and HOSTED_ZONE_ID to serve under your own domain instead."
+    fi
+  fi
+
   echo "═══════════════════════════════════════════════════"
   echo "  Deploying: $model → $target"
   echo "  Region:    $region"
@@ -529,13 +593,17 @@ cmd_deploy() {
   # went straight to launching a GPU instance that could never serve. Models
   # without a Dockerfile now build from the shared inference/Dockerfile.default.
   #
-  # We reuse an existing image tag to save a slow CodeBuild run, but that means
-  # changes to the inference code (e.g. the security middleware) do NOT reach a
-  # redeploy of an already-built tag. Set REBUILD_IMAGE=1 (or bump the version in
-  # endpoint.yaml) to force a fresh build.
-  if [ "${REBUILD_IMAGE:-0}" != "1" ] && image_exists "$model"; then
-    echo "✓ Container image already exists in ECR — skipping build"
-    echo "  (set REBUILD_IMAGE=1 to force a rebuild after changing inference code)"
+  # Image tags are immutable (scripts/build-image.py), so an existing version is
+  # reused as-is: changes to the inference code (e.g. the security middleware)
+  # reach a deployment only through a new `version:` in endpoint.yaml.
+  if image_exists "$model"; then
+    if [ "${REBUILD_IMAGE:-0}" = "1" ]; then
+      echo "Error: REBUILD_IMAGE=1, but world-model-$model:$(get_version "$model") already exists and" >&2
+      echo "       image tags are immutable. Bump 'version:' in inference/models/$model/endpoint.yaml." >&2
+      exit 1
+    fi
+    echo "✓ Container image $(get_version "$model") already exists in ECR — skipping build"
+    echo "  (bump 'version:' in endpoint.yaml to rebuild after changing inference code)"
   else
     echo "Step 1/2: Building container image via CodeBuild..."
     cmd_build "$model"
@@ -552,6 +620,15 @@ cmd_deploy() {
     echo "         ./deploy.sh build $model" >&2
     exit 1
   fi
+
+  # Deploy by digest, not tag: the instance and the SageMaker model then run
+  # exactly the image built and scanned here, whatever happens to the tag later.
+  local image_digest
+  image_digest=$(aws ecr describe-images --repository-name "world-model-$model" \
+    --image-ids imageTag="$(get_version "$model")" --region "$region" \
+    --query 'imageDetails[0].imageDigest' --output text)
+  check_shape "image digest" "$image_digest" '^sha256:[0-9a-f]{64}$'
+  echo "  Image: world-model-$model@$image_digest"
 
   # Step 2: Deploy infrastructure via CDK
   echo "Step 2/2: Deploying infrastructure via CDK..."
@@ -570,15 +647,21 @@ cmd_deploy() {
   local ctx_args=(
     -c "model=$model"
     -c "target=$target"
+    -c "imageDigest=$image_digest"
   )
 
   if [ -n "$cognito_pool" ] && [ -n "$cognito_clients" ]; then
+    # A scope is required: without one the server would accept any access token
+    # from an allowed client, whatever it was issued for.
+    check_shape "$COGNITO_POOL_PARAM" "$cognito_pool" "$POOL_RE"
+    check_shape "$COGNITO_CLIENTS_PARAM" "$cognito_clients" "$CLIENTS_RE"
+    check_shape "$COGNITO_SCOPE_PARAM" "$cognito_scope" "$SCOPE_RE"
     ctx_args+=(
       -c "authMode=cognito"
       -c "cognitoUserPoolId=$cognito_pool"
       -c "cognitoClientIds=$cognito_clients"
+      -c "cognitoScope=$cognito_scope"
     )
-    [ -n "$cognito_scope" ] && ctx_args+=(-c "cognitoScope=$cognito_scope")
     echo "  Auth: Cognito user pool $cognito_pool" >&2
   elif [ "${WORLD_MODEL_AUTH_MODE:-}" = "disabled" ]; then
     # Explicit, and it has to stay explicit. The container's own default is to
@@ -593,7 +676,17 @@ cmd_deploy() {
     echo "       WORLD_MODEL_AUTH_MODE=disabled for local/offline use only." >&2
     exit 1
   fi
-  [ -n "${WORLD_MODEL_ALLOWED_ORIGINS:-}" ] && ctx_args+=(-c "allowedOrigins=$WORLD_MODEL_ALLOWED_ORIGINS")
+  # Browser origins the server accepts, for CORS and for WebSocket handshakes.
+  # The server rejects a WebSocket whose Origin is not listed, so the local UI
+  # (which sends Origin: http://localhost:3000 through the dev proxy) must be on
+  # it. The value also reaches the instance's boot environment, hence the shape
+  # check.
+  local allowed_origins="${WORLD_MODEL_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}"
+  if [[ ! "$allowed_origins" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(,https?://[A-Za-z0-9.-]+(:[0-9]+)?)*$ ]]; then
+    echo "ERROR: WORLD_MODEL_ALLOWED_ORIGINS must be a comma-separated list of http(s) origins." >&2
+    exit 1
+  fi
+  ctx_args+=(-c "allowedOrigins=$allowed_origins")
   [ -n "${WORLD_MODEL_RATE_LIMIT:-}" ] && ctx_args+=(-c "rateLimit=$WORLD_MODEL_RATE_LIMIT")
   # Who is emailed about EC2 scaling events (a GPU launch failing for capacity,
   # the instance being replaced). Defaults to the deployer's git email so the
@@ -610,7 +703,11 @@ cmd_deploy() {
     echo "       Set WORLD_MODEL_NOTIFICATION_EMAIL=<address> (or configure git user.email)." >&2
     exit 1
   fi
-  [ -n "${CERTIFICATE_ARN:-}" ] && ctx_args+=(-c "certificateArn=$CERTIFICATE_ARN")
+  if [ -n "${CERTIFICATE_ARN:-}" ]; then
+    ctx_args+=(-c "certificateArn=$CERTIFICATE_ARN" -c "endpointDomain=$ENDPOINT_DOMAIN" -c "hostedZoneId=$HOSTED_ZONE_ID")
+  fi
+  [ "${ALLOW_PLAINTEXT:-}" = "1" ] && ctx_args+=(-c "allowPlaintext=true")
+  [ -n "${RESOLVED_ALLOWED_CIDR:-}" ] && ctx_args+=(-c "allowedCidr=$RESOLVED_ALLOWED_CIDR")
   if [ -n "${CAPACITY_BLOCK_ID:-}" ]; then
     # Fail fast on a dead reservation. A Capacity Block that has expired (or a
     # typo'd ID) still deploys cleanly, but then EVERY instance launch fails with
@@ -637,11 +734,6 @@ cmd_deploy() {
   # private subnet in that AZ or it will launch in the wrong one and fail.
   [ -n "${CAPACITY_SUBNET_IDS:-}" ] && ctx_args+=(-c "capacitySubnets=$CAPACITY_SUBNET_IDS")
   [ -n "${INSTANCE_TYPE:-}" ] && ctx_args+=(-c "instanceType=$INSTANCE_TYPE")
-
-  if [ -z "${CERTIFICATE_ARN:-}" ] && [ "$target" = "ec2" ]; then
-    echo "  ⚠  No CERTIFICATE_ARN set — the ALB will serve plain HTTP. Set CERTIFICATE_ARN" >&2
-    echo "     to an ACM cert ARN to enable HTTPS before exposing this to untrusted networks." >&2
-  fi
 
   # Model stack
   (cd "$CDK_DIR" && npx cdk deploy "WorldModel-$model" \

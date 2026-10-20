@@ -136,16 +136,38 @@ def main():
 
     # Ensure the ECR repo exists with vulnerability scanning on push, so every
     # image this pipeline builds is scanned for known CVEs in its OS and language
-    # packages. Applied to existing repos too, which predate the setting.
+    # packages, and with immutable tags, so a pushed version can never be
+    # overwritten by a later build (EDSR WM-015). The :buildcache tag is the one
+    # exclusion: every build rewrites it, and plain IMMUTABLE would quietly break
+    # the layer cache. Both settings are applied to existing repos too.
+    mutability = [
+        "--image-tag-mutability", "IMMUTABLE_WITH_EXCLUSION",
+        "--image-tag-mutability-exclusion-filters", "filterType=WILDCARD,filter=buildcache",
+    ]
     r = run(["aws", "ecr", "describe-repositories", "--repository-names", repo_name, "--region", args.region])
     if r.returncode != 0:
-        run(["aws", "ecr", "create-repository", "--repository-name", repo_name,
-             "--image-scanning-configuration", "scanOnPush=true", "--region", args.region])
+        r = run(["aws", "ecr", "create-repository", "--repository-name", repo_name,
+                 "--image-scanning-configuration", "scanOnPush=true", *mutability, "--region", args.region])
+        if r.returncode != 0:
+            sys.exit(f"Failed to create ECR repository {repo_name} (IMMUTABLE_WITH_EXCLUSION needs a "
+                     f"recent AWS CLI):\n{r.stderr.strip()}")
     else:
         scan = run(["aws", "ecr", "put-image-scanning-configuration", "--repository-name", repo_name,
                     "--image-scanning-configuration", "scanOnPush=true", "--region", args.region])
         if scan.returncode != 0:
             print(f"  WARNING: could not enable scan-on-push for {repo_name}: {scan.stderr.strip()}")
+        mut = run(["aws", "ecr", "put-image-tag-mutability", "--repository-name", repo_name,
+                   *mutability, "--region", args.region])
+        if mut.returncode != 0:
+            sys.exit(f"Failed to make {repo_name} tags immutable (needs a recent AWS CLI):\n{mut.stderr.strip()}")
+
+    # An immutable tag cannot be rebuilt, so fail here rather than after a
+    # 30-minute build whose push is refused.
+    exists = run(["aws", "ecr", "describe-images", "--repository-name", repo_name,
+                  "--image-ids", f"imageTag={version}", "--region", args.region])
+    if exists.returncode == 0:
+        sys.exit(f"{repo_name}:{version} already exists and tags are immutable. Bump `version:` in "
+                 f"inference/models/{endpoint_id}/endpoint.yaml to rebuild.")
 
     # Upload source (zip the repo)
     import tempfile, zipfile

@@ -31,7 +31,7 @@ sagemaker:
 mode: async
 
 hf:
-  - { repo: nvidia/Lyra-2.0, subdir: "" }
+  - { repo: nvidia/Lyra-2.0, subdir: "", revision: c178c3fcf12b63cf98f6749999e6ecb63901669f }
 
 ec2:
   instance: p5.4xlarge

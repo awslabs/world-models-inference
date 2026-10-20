@@ -33,7 +33,7 @@ sagemaker:
   max_concurrent: 1   # stateful session — one player per container
 
 hf:
-  - { repo: Skywork/Matrix-Game-3.0, subdir: "" }
+  - { repo: Skywork/Matrix-Game-3.0, subdir: "", revision: 382aa382a03cec057360755aa72c7735025770bb }
 
 ec2:
   instance: p5.48xlarge

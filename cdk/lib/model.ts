@@ -23,8 +23,14 @@ export interface ModelStackProps extends cdk.StackProps {
    * manifest is the difference between a demo and no demo.
    */
   readonly instanceTypeOverride?: string;
-  /** ACM certificate ARN for the EC2 ALB — enables HTTPS (M1). */
+  /** ACM certificate ARN for the EC2 ALB; needs endpointDomain + hostedZoneId. */
   readonly certificateArn?: string;
+  readonly endpointDomain?: string;
+  readonly hostedZoneId?: string;
+  /** Serve plain HTTP from the ALB instead of HTTPS via CloudFront (test only). */
+  readonly allowPlaintext?: boolean;
+  /** Viewer CIDR admitted at the CloudFront edge. */
+  readonly allowedCidr?: string;
   /** SSM SecureString name holding the shared inference API token (R1). */
   readonly cognitoUserPoolId?: string;
   readonly cognitoClientIds?: string;
@@ -36,6 +42,8 @@ export interface ModelStackProps extends cdk.StackProps {
   readonly rateLimit?: string;
   /** Email subscribed to EC2 scaling-event notifications. */
   readonly notificationEmail?: string;
+  /** `sha256:...` of the image to run; pins the deployment to that exact image. */
+  readonly imageDigest?: string;
 }
 
 export class ModelStack extends cdk.Stack {
@@ -65,7 +73,7 @@ export class ModelStack extends cdk.Stack {
     // Derived paths
     const modelDataUri = `s3://${artifactsBucket}/${manifest.modelDataPrefix}`;
     const outputUri = `s3://${outputsBucket}/${deploymentName}/`;
-    const image = imageUri(manifest, this.account, this.region);
+    const image = imageUri(manifest, this.account, this.region, props.imageDigest);
 
     if (target === 'ec2') {
       new Ec2Inference(this, 'EC2', {
@@ -84,6 +92,10 @@ export class ModelStack extends cdk.Stack {
         capacityReservationId: props.capacityReservationId,
         capacitySubnetIds: props.capacitySubnetIds,
         certificateArn: props.certificateArn,
+        endpointDomain: props.endpointDomain,
+        hostedZoneId: props.hostedZoneId,
+        allowPlaintext: props.allowPlaintext,
+        allowedCidr: props.allowedCidr,
         cognitoUserPoolId: props.cognitoUserPoolId,
         cognitoClientIds: props.cognitoClientIds,
         cognitoScope: props.cognitoScope,

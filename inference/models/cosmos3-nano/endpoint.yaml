@@ -15,7 +15,7 @@ sagemaker:
   output: s3://world-model-accelerator-outputs-${AWS_ACCOUNT_ID}/cosmos3-nano/
 
 hf:
-  - { repo: nvidia/Cosmos3-Nano, subdir: "" }
+  - { repo: nvidia/Cosmos3-Nano, subdir: "", revision: e59a53c25979a090fa8706c9acc0c254a6e89b92 }
 
 ec2:
   instance: g6e.12xlarge

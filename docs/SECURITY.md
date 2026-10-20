@@ -64,17 +64,23 @@ credentials.
 
 ## Before production
 
-### 1. Enable TLS
+### 1. Keep TLS on
 
-The single most important change. Without it access tokens cross the network in
-plaintext, where anyone on the path can replay one until it expires.
+EC2 endpoints are HTTPS by default through CloudFront, so access tokens never
+cross the client's network in plaintext. Never deploy a reachable endpoint with
+`ALLOW_PLAINTEXT=1`: anyone on the path could replay a token until it expires.
+
+The CloudFront-to-ALB hop is HTTP on AWS's network, guarded by a secret origin
+header. To terminate TLS at the ALB under your own name instead:
 
 ```bash
-CERTIFICATE_ARN=arn:aws:acm:...:certificate/... ./deploy.sh <model>
+CERTIFICATE_ARN=arn:aws:acm:...:certificate/... ENDPOINT_DOMAIN=wm.example.com \
+HOSTED_ZONE_ID=Z... ./deploy.sh <model>
 ```
 
 The ALB then serves HTTPS on 443 with the `ELBSecurityPolicy-TLS13-1-2-2021-06`
-policy and redirects HTTP 80 → 443. See
+policy, redirects HTTP 80 → 443, and gets a Route 53 alias. The certificate must
+be in the ALB's region and cover `ENDPOINT_DOMAIN`. See
 [requesting an ACM certificate](https://docs.aws.amazon.com/acm/latest/userguide/gs-acm-request-public.html).
 
 ### 2. Set the ingress range deliberately
@@ -110,6 +116,125 @@ WORLD_MODEL_RATE_LIMIT=120 \
 ```
 
 `WORLD_MODEL_RATE_LIMIT=0` disables rate limiting entirely.
+
+### 5. Restrict who can change what a deployment runs
+
+Three things in your account decide what runs on the GPU instances, so anyone who can
+change them can run code there:
+
+- **The parameters under `/world-model/foundation/*`.** Deployments read the Cognito
+  settings, bucket names and network IDs from them.
+- **The `world-model-weights` and `world-model-image` CodeBuild projects.** Whoever can
+  start a build can override its buildspec, and the build runs as that project's role.
+  The image role can push to every cartridge repository.
+- **The two build roles** (`WorldModelWeightsBuildRole-<region>`,
+  `WorldModelImageBuildRole-<region>`). Whoever can pass them can attach them to a build
+  of their own.
+
+The stacks validate everything they read, and the build roles are scoped to the
+minimum each build needs. But both of those assume that only your deploy operators
+can make these changes, and only your account can enforce that. The stacks can't do
+it themselves: the principals involved are your account's own users and roles, SSM
+parameters have no resource policies, and CodeBuild project policies only control
+sharing with other accounts.
+
+Apply a policy like the one below as a service control policy on the account, or as
+a deny policy on every role and user except the operators'. Replace the two
+principal patterns with:
+
+- your deploy operators' roles, and
+- the CloudFormation execution role that deploys the stacks. This is the CDK default
+  shown below, unless you bootstrapped CDK with a different one.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyDeployersChangeFoundationParameters",
+      "Effect": "Deny",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:DeleteParameters",
+        "ssm:LabelParameterVersion"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/world-model/foundation/*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::*:role/cdk-*-cfn-exec-role-*",
+            "arn:aws:iam::*:role/<your-deploy-operator-role>"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "OnlyDeployersStartOrChangeBuilds",
+      "Effect": "Deny",
+      "Action": [
+        "codebuild:StartBuild",
+        "codebuild:StartBuildBatch",
+        "codebuild:RetryBuild",
+        "codebuild:RetryBuildBatch",
+        "codebuild:UpdateProject"
+      ],
+      "Resource": [
+        "arn:aws:codebuild:*:*:project/world-model-weights",
+        "arn:aws:codebuild:*:*:project/world-model-image"
+      ],
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::*:role/cdk-*-cfn-exec-role-*",
+            "arn:aws:iam::*:role/<your-deploy-operator-role>"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "OnlyCloudFormationPassesBuildRoles",
+      "Effect": "Deny",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::*:role/WorldModelWeightsBuildRole-*",
+        "arn:aws:iam::*:role/WorldModelImageBuildRole-*"
+      ],
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/cdk-*-cfn-exec-role-*"
+        }
+      }
+    }
+  ]
+}
+```
+
+Only CloudFormation needs to pass the build roles: it attaches them when it creates
+the projects, and starting a build doesn't pass a role. `deploy.sh` and
+`scripts/*.py` never write the foundation parameters. They do start builds, which is
+why the operator role is listed in the second statement.
+
+Check the result with the policy simulator. For a role that isn't an operator, each
+of these should return `explicitDeny`:
+
+```bash
+sim() { aws iam simulate-principal-policy --policy-source-arn <some-other-role-arn> \
+  --action-names "$1" --resource-arns "$2" --query 'EvaluationResults[0].EvalDecision' --output text; }
+sim ssm:PutParameter     arn:aws:ssm:<region>:<account>:parameter/world-model/foundation/vpc-id
+sim codebuild:StartBuild arn:aws:codebuild:<region>:<account>:project/world-model-image
+sim iam:PassRole         arn:aws:iam::<account>:role/WorldModelImageBuildRole-<region>
+```
+
+This checks the deny-policy form. To check an SCP, make a real call as a
+non-operator role instead. For example,
+`aws ssm put-parameter --name /world-model/foundation/scp-check --value x --type String`
+should fail with `AccessDenied`. If it succeeds, delete the parameter and fix the
+policy.
+
+An identity policy can't restrict a principal that holds `AdministratorAccess`,
+because Admin can detach it. In accounts where everyone is an administrator, use the
+SCP form, or treat the account as single-tenant.
 
 ## Revoking access
 

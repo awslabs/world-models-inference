@@ -25,8 +25,8 @@ sagemaker:
   output: s3://world-model-accelerator-outputs-${AWS_ACCOUNT_ID}/lingbot-fast/
 
 hf:
-  - { repo: robbyant/lingbot-world-base-cam, subdir: "" }
-  - { repo: robbyant/lingbot-world-fast,     subdir: "lingbot_world_fast" }
+  - { repo: robbyant/lingbot-world-base-cam, subdir: "", revision: 6fc824ffc338d64c97c77e2eb8c0f4cfc24d82bd }
+  - { repo: robbyant/lingbot-world-fast,     subdir: "lingbot_world_fast", revision: b7a1db2da9bd3ba675ee01c228f41db0309b981e }
 
 mode: async
 

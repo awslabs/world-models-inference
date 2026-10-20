@@ -125,6 +125,11 @@ class CognitoConfig:
             )
 
         scope = (os.environ.get("WORLD_MODEL_COGNITO_SCOPE") or "").strip() or None
+        if scope is None:
+            raise AuthMisconfigured(
+                "WORLD_MODEL_COGNITO_SCOPE is not set. Without it any access token "
+                "from an allowed client is accepted, whatever it was issued for."
+            )
         override = (os.environ.get("WORLD_MODEL_JWKS_URL") or "").strip() or None
         return cls(
             user_pool_id=pool,
@@ -139,7 +144,7 @@ class CognitoConfig:
             "Auth ENABLED (Cognito). issuer=%s clients=%d scope=%s",
             self.issuer,
             len(self.client_ids),
-            self.required_scope or "(none required)",
+            self.required_scope,
         )
 
 
@@ -160,6 +165,12 @@ class TokenVerifier:
                 f"tokens but could not be imported: {_IMPORT_ERROR!r}. It is listed "
                 "in inference/lib/requirements.txt; if this container was built "
                 "from a Dockerfile that does not install that file, fix the build."
+            )
+        if not config.required_scope:
+            # Same rule as from_env, for configs built directly: a verifier with no
+            # scope accepts any token an allowed client holds (EDSR WM-004).
+            raise AuthMisconfigured(
+                "A required scope is mandatory; refusing to verify tokens without one."
             )
         self.config = config
         self._jwk_client = jwk_client or PyJWKClient(
@@ -217,12 +228,10 @@ class TokenVerifier:
         if client_id not in self.config.client_ids:
             raise AuthError(f"Client {client_id!r} is not allowed")
 
-        if self.config.required_scope:
-            scopes = _scopes(claims)
-            if self.config.required_scope not in scopes:
-                raise AuthError(
-                    f"Token lacks required scope {self.config.required_scope!r}"
-                )
+        if self.config.required_scope not in _scopes(claims):
+            raise AuthError(
+                f"Token lacks required scope {self.config.required_scope!r}"
+            )
 
         return claims
 

@@ -29,7 +29,7 @@ version: 0.1.0
 # --- Weights to stage from Hugging Face --------------------------------------
 # Then run: python scripts/stage-weights.py <your-id> --source hf:<org>/<repo>
 hf:
-  - { repo: CHANGE-ME/your-model, subdir: "" }
+  - { repo: CHANGE-ME/your-model, subdir: "", revision: CHANGE-ME-40-char-commit-sha }
 
 # async = request/poll job (video, 3D). real-time = stateful WebSocket session.
 mode: async

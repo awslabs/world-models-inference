@@ -46,10 +46,11 @@ RUN git clone --recursive https://github.com/nv-tlabs/lyra.git /opt/ml/code/lyra
 
 # Upstream pinned deps (numpy>=2, opencv==4.11.0.86, transformers, ...) resolve
 # cleanly here since torch is numpy-2.x native. --no-deps per INSTALL.md; MoGe
-# also --no-deps (its runtime deps are covered and free resolution conflicts).
+# also --no-deps (its runtime deps are covered and free resolution conflicts),
+# and pinned to a commit like LYRA_SHA so a rebuild cannot pick up new code.
 RUN cd /opt/ml/code/lyra/Lyra-2 && \
     pip install --no-cache-dir --no-deps -r requirements.txt && \
-    pip install --no-cache-dir --no-deps "git+https://github.com/microsoft/MoGe.git"
+    pip install --no-cache-dir --no-deps "git+https://github.com/microsoft/MoGe.git@74fbce054ebed49800de42d0ad0e83495065719a"
 
 # Build the CUDA extensions only for the GPUs we deploy to (H100=9.0, L40S=8.9).
 # Upstream defaults to ~11 arches, OOM-killing cc1plus. MAX_JOBS bounds memory.

@@ -377,6 +377,17 @@ def _register_streaming(app: FastAPI, runner: Runner, config: SecurityConfig):
     )
 
     async def ws_handler(ws: WebSocket):
+        # Origin first. Starlette's CORS middleware does not apply to WebSocket
+        # handshakes, so without this any web page the user visits can open a
+        # socket through a credential-injecting proxy (the vite dev proxy) and
+        # read every frame. Browsers always send Origin on a WebSocket handshake;
+        # SageMaker, CI and benchmark.py send none and are unaffected.
+        origin = ws.headers.get("origin")
+        if origin is not None and origin not in config.allowed_origins:
+            await ws.close(code=1008)  # policy violation
+            logger.info("Rejected WebSocket from disallowed origin %r", origin)
+            return
+
         # Enforce auth before accepting the socket. Non-browser clients send an
         # Authorization header; the browser WebSocket API cannot, so it offers
         # the token as a subprotocol instead (see WS_BEARER_PROTOCOL). A token in

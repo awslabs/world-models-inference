@@ -28,7 +28,7 @@ stacks stay independent and a model can be destroyed without touching shared inf
 ## Build
 
 `./deploy.sh` first probes ECR for an existing image tag and skips the build if one
-is present (`REBUILD_IMAGE=1` forces it). Otherwise it zips `inference/`, uploads it
+is present (tags are immutable, so a rebuild needs a new `version:`). Otherwise it zips `inference/`, uploads it
 to `s3://<artifacts>/_builds/<id>/source.zip` and runs the `world-model-image`
 CodeBuild project, which builds the container and pushes it to ECR. A `:buildcache`
 tag is pulled as a cache source and pushed back, so unchanged early layers — base
@@ -51,8 +51,18 @@ CDK deploys a two-AZ VPC (`maxAzs: 2`, one NAT gateway).
 The **Application Load Balancer** sits in the public subnet and is the only public
 entry. It forwards `:8080` to a target group health-checked on `/health` (30s
 interval, 2 healthy / 3 unhealthy). Ingress is restricted to `allowedCidr` — which
-`deploy.sh` defaults to your own public IP `/32`. With `CERTIFICATE_ARN` set it
-serves HTTPS on 443 and redirects 80 → 443; without one it is plain HTTP.
+`deploy.sh` defaults to your own public IP `/32`. Transport is HTTPS by default,
+in one of two ways:
+
+- **CloudFront (default).** A distribution serves `https://<id>.cloudfront.net` and
+  forwards to the ALB on HTTP:80 with a secret `X-Origin-Verify` header; the ALB
+  answers 403 to anything without it, and admits CloudFront's origin-facing prefix
+  list. Behind CloudFront the ALB only sees CloudFront's addresses, so
+  `allowedCidr` is enforced by a viewer-request CloudFront Function instead.
+- **Custom domain.** With `CERTIFICATE_ARN`, `ENDPOINT_DOMAIN` and `HOSTED_ZONE_ID`
+  the ALB serves HTTPS on 443, redirects 80 → 443, and gets a Route 53 alias.
+
+`ALLOW_PLAINTEXT=1` serves plain HTTP from the ALB, for short-lived tests only.
 
 The **GPU instance** runs in a private subnet with no public IP, in an Auto Scaling
 group pinned to `min = max = desired = 1` — this is not an elastic fleet. Its AMI is

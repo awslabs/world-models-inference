@@ -8,7 +8,7 @@
 | Stack stuck in `ROLLBACK_COMPLETE` | Delete the stack manually, then redeploy |
 | Model OOMs on L40S | Use an H100-class instance; many models need >48 GB VRAM |
 | Weight staging: `No space left on device` | Peak disk is ~2× the repo size — see [Weight staging](#weight-staging) |
-| Deploy launched an instance that serves nothing | Shouldn't happen: `deploy.sh` refuses to launch without an ECR image. If you changed inference code, set `REBUILD_IMAGE=1` — an unchanged image tag is reused |
+| Deploy launched an instance that serves nothing | Shouldn't happen: `deploy.sh` refuses to launch without an ECR image. If you changed inference code, bump `version:` in `endpoint.yaml` — image tags are immutable, so an existing tag is reused |
 | `Cloud assembly schema version mismatch … found 54.0.0` | Your **global** CDK CLI is older than the pinned `aws-cdk-lib` — see [CDK version](#cdk-version) |
 | Endpoint returns 401 / WebSocket closes with 1008 | Auth is on by default. Pass the bearer token from SSM — see [Security](SECURITY.md) |
 | Endpoint unreachable, no error | ALB ingress is locked to the deployer's IP. Re-run `./deploy.sh` from the same network, or set `ALLOWED_CIDR` |

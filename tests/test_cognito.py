@@ -134,17 +134,25 @@ def test_extra_scopes_are_fine_as_long_as_the_required_one_is_present(verifier, 
     assert verifier.verify(token)["client_id"] == CLIENT
 
 
-def test_scope_is_optional_when_not_configured(config, keypair):
-    """A pool without custom scopes still authenticates."""
-    private, public = keypair
+def test_verifier_refuses_a_config_without_a_scope(config, keypair):
+    """No scope would mean any token an allowed client holds is accepted (WM-004)."""
+    _, public = keypair
     relaxed = CognitoConfig(
         user_pool_id=POOL,
         client_ids=frozenset({CLIENT}),
         region=REGION,
         required_scope=None,
     )
-    v = TokenVerifier(relaxed, jwk_client=_StubJWKClient(public))
-    assert v.verify(make_token(private, scope="openid"))["sub"] == "user-1"
+    with pytest.raises(AuthMisconfigured, match="scope"):
+        TokenVerifier(relaxed, jwk_client=_StubJWKClient(public))
+
+
+def test_from_env_refuses_a_missing_scope(monkeypatch):
+    monkeypatch.setenv("WORLD_MODEL_COGNITO_USER_POOL_ID", POOL)
+    monkeypatch.setenv("WORLD_MODEL_COGNITO_CLIENT_IDS", CLIENT)
+    monkeypatch.delenv("WORLD_MODEL_COGNITO_SCOPE", raising=False)
+    with pytest.raises(AuthMisconfigured, match="WORLD_MODEL_COGNITO_SCOPE"):
+        CognitoConfig.from_env()
 
 
 def test_any_allowlisted_client_is_accepted(keypair):
@@ -268,6 +276,7 @@ def test_missing_client_allowlist_is_fatal(monkeypatch):
 def test_region_is_derived_from_the_pool_id(monkeypatch):
     monkeypatch.setenv("WORLD_MODEL_COGNITO_USER_POOL_ID", POOL)
     monkeypatch.setenv("WORLD_MODEL_COGNITO_CLIENT_IDS", f"{CLIENT}, second ")
+    monkeypatch.setenv("WORLD_MODEL_COGNITO_SCOPE", SCOPE)
     monkeypatch.delenv("WORLD_MODEL_COGNITO_REGION", raising=False)
     cfg = CognitoConfig.from_env()
     assert cfg.region == REGION
@@ -280,6 +289,7 @@ def test_region_is_derived_from_the_pool_id(monkeypatch):
 def test_explicit_region_overrides_the_pool_prefix(monkeypatch):
     monkeypatch.setenv("WORLD_MODEL_COGNITO_USER_POOL_ID", POOL)
     monkeypatch.setenv("WORLD_MODEL_COGNITO_CLIENT_IDS", CLIENT)
+    monkeypatch.setenv("WORLD_MODEL_COGNITO_SCOPE", SCOPE)
     monkeypatch.setenv("WORLD_MODEL_COGNITO_REGION", "us-east-1")
     assert CognitoConfig.from_env().region == "us-east-1"
 
@@ -312,6 +322,7 @@ def test_security_config_propagates_the_missing_dependency(monkeypatch):
     monkeypatch.setenv("WORLD_MODEL_AUTH_MODE", "cognito")
     monkeypatch.setenv("WORLD_MODEL_COGNITO_USER_POOL_ID", POOL)
     monkeypatch.setenv("WORLD_MODEL_COGNITO_CLIENT_IDS", CLIENT)
+    monkeypatch.setenv("WORLD_MODEL_COGNITO_SCOPE", SCOPE)
     monkeypatch.setattr(cognito_mod, "_IMPORT_ERROR", ModuleNotFoundError("no jwt"))
     with pytest.raises(AuthMisconfigured, match="PyJWT"):
         SecurityConfig()

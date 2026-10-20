@@ -1,15 +1,18 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-diffusers @ git+https://github.com/huggingface/diffusers.git
+# Pinned to a commit: an unpinned git install builds whatever main is that day
+# (EDSR WM-015). Bump deliberately, with a rebuild and a smoke test.
+diffusers @ git+https://github.com/huggingface/diffusers.git@d961a388fd02e4db38d17350c8dd9b8abe642e05
 accelerate
 av
 cosmos_guardrail
 huggingface_hub
 imageio
 imageio-ffmpeg
-torch
-torchvision
+# torch and torchvision come from the NGC base image (CUDA-matched). They are not
+# listed: under --no-deps an unpinned entry was only ever satisfied by the base
+# image, and a pinned one would replace it with a wheel built for another CUDA.
 transformers
 fastapi
 uvicorn

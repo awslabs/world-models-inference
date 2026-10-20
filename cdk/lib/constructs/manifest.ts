@@ -72,10 +72,20 @@ export function loadManifest(endpointId: string, accountId: string): ModelManife
 
   // Extract the prefix after the bucket: s3://bucket/prefix/ → prefix/
   const modelDataPrefix = raw.model_data.replace(/^s3:\/\/[^/]+\//, '');
+  // Both reach the instance's boot script (the S3 sync path and the image tag),
+  // so they are held to the shapes they legitimately have. The version rule is
+  // build-image.py's tag rule, which is what actually named the image.
+  if (!/^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*\/?$/.test(modelDataPrefix)) {
+    throw new Error(`${endpointId}: model_data prefix ${JSON.stringify(modelDataPrefix)} is not a plain S3 key prefix`);
+  }
+  const version = raw.version || 'latest';
+  if (!/^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/.test(version)) {
+    throw new Error(`${endpointId}: version ${JSON.stringify(version)} is not a valid image tag`);
+  }
 
   return {
     endpointId,
-    version: raw.version || 'latest',
+    version,
     modelDataPrefix,
     sagemaker: {
       instance: raw.sagemaker.instance,
@@ -94,6 +104,12 @@ export function inferMode(manifest: ModelManifest): 'async' | 'real-time' {
   return manifest.sagemaker.output ? 'async' : 'real-time';
 }
 
-export function imageUri(manifest: ModelManifest, accountId: string, region: string): string {
-  return `${accountId}.dkr.ecr.${region}.amazonaws.com/world-model-${manifest.endpointId}:${manifest.version}`;
+/**
+ * The image to run. With a digest (deploy.sh always passes one) this is
+ * `repo@sha256:...`, so the instance and the SageMaker model run exactly the
+ * image that was built, whatever later happens to its tag (EDSR WM-015).
+ */
+export function imageUri(manifest: ModelManifest, accountId: string, region: string, digest?: string): string {
+  const repo = `${accountId}.dkr.ecr.${region}.amazonaws.com/world-model-${manifest.endpointId}`;
+  return digest ? `${repo}@${digest}` : `${repo}:${manifest.version}`;
 }

@@ -546,6 +546,52 @@ def test_ws_rejects_marker_without_a_token(monkeypatch):
             ws.receive_bytes()
 
 
+def test_ws_rejects_a_disallowed_origin(monkeypatch):
+    """CORS does not cover WebSocket handshakes, so the handler checks Origin itself.
+
+    A valid token does not help: the threat is a cross-site page riding a proxy
+    that injects one (WM-001).
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    c = _client(_build_app(monkeypatch, auth=True, streaming=True,
+                           origins="http://localhost:3000"))
+    token = cognito_testing.make_access_token()
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect("/ws", headers={"origin": "https://evil.example",
+                                                 "Authorization": f"Bearer {token}"}) as ws:
+            ws.receive_json()
+    assert exc.value.code == 1008
+
+
+def test_ws_rejects_any_origin_without_an_allowlist(monkeypatch):
+    c = _client(_build_app(monkeypatch, streaming=True))
+    from starlette.websockets import WebSocketDisconnect
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect("/ws", headers={"origin": "http://localhost:3000"}) as ws:
+            ws.receive_json()
+    assert exc.value.code == 1008
+
+
+def test_ws_accepts_an_allowlisted_origin(monkeypatch):
+    c = _client(_build_app(monkeypatch, auth=True, streaming=True,
+                           origins="http://localhost:3000"))
+    token = cognito_testing.make_access_token()
+    with c.websocket_connect("/ws", headers={"origin": "http://localhost:3000",
+                                             "Authorization": f"Bearer {token}"}) as ws:
+        assert ws.receive_json()["type"] == "connected"
+
+
+def test_ws_without_origin_still_connects(monkeypatch):
+    """SageMaker, CI and benchmark.py send no Origin and must keep working."""
+    c = _client(_build_app(monkeypatch, auth=True, streaming=True,
+                           origins="http://localhost:3000"))
+    token = cognito_testing.make_access_token()
+    with c.websocket_connect("/ws", headers={"Authorization": f"Bearer {token}"}) as ws:
+        assert ws.receive_json()["type"] == "connected"
+
+
 def test_ws_open_when_auth_disabled(monkeypatch):
     c = _client(_build_app(monkeypatch, streaming=True))
     with c.websocket_connect("/ws") as ws:

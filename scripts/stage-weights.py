@@ -6,10 +6,14 @@
 Triggers a build that downloads from HuggingFace Hub or torch.hub
 and syncs to S3. The CodeBuild project is managed by CDK (shared stack).
 
+Every source is pinned to a commit. The revision is read from the cartridge's
+endpoint.yaml `hf:` list (the revision under review is the revision staged), or
+given with --revision; a run with neither is refused.
+
 Usage:
-  python scripts/stage-weights.py vjepa2 --source torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant
   python scripts/stage-weights.py lingbot-fast --source hf:robbyant/lingbot-world-base-cam
   python scripts/stage-weights.py lingbot-fast --source hf:robbyant/lingbot-world-fast --subdir lingbot_world_fast
+  python scripts/stage-weights.py vjepa2 --source torch_hub:facebookresearch/vjepa2:vjepa2_ac_vit_giant --revision <sha>
 """
 
 import argparse
@@ -58,6 +62,13 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
 _ENTRY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SUBDIR_RE = re.compile(r"^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+# Build-time installs are pinned: an unpinned `pip install` runs whatever the
+# index serves today under the build role (EDSR WM-015). huggingface_hub must be
+# 0.34.0 or later for the `hf` CLI used below.
+HF_HUB_VERSION = "0.36.2"
+TORCH_CPU_VERSION = "2.5.1"
 
 
 def _checked(value: str, pattern: re.Pattern, what: str) -> str:
@@ -72,13 +83,38 @@ def _checked(value: str, pattern: re.Pattern, what: str) -> str:
 _REMOTE_TMP = "/tmp/weights"  # nosec B108 - remote build-box path, not local
 
 
-def build_commands(source: str, subdir: str, s3_dest: str, region: str) -> list:
+def manifest_revision(endpoint_id: str, repo: str, subdir: str):
+    """The revision endpoint.yaml pins for this (repo, subdir), or None.
+
+    Parsed with a regex, like get_s3_dest, so the script keeps needing nothing
+    beyond the standard library: the `hf:` entries are one flow mapping per line,
+    `- { repo: <repo>, subdir: "<subdir>", revision: <sha> }`.
+    """
+    manifest = MODELS_DIR / endpoint_id / "endpoint.yaml"
+    if not manifest.exists():
+        return None
+    for line in manifest.read_text().splitlines():
+        m = re.match(r"^\s*-\s*\{(.*)\}\s*(#.*)?$", line)
+        if not m:
+            continue
+        fields = dict(
+            (k.strip(), v.strip().strip('"\''))
+            for k, _, v in (f.partition(":") for f in m.group(1).split(","))
+        )
+        if fields.get("repo") == repo and fields.get("subdir", "") == subdir:
+            return fields.get("revision") or None
+    return None
+
+
+def build_commands(source: str, subdir: str, s3_dest: str, region: str, revision: str) -> list:
     if subdir:
         _checked(subdir, _SUBDIR_RE, "--subdir")
+    # A commit, never a branch or tag: both can be moved to new content.
+    rev = _checked(revision or "", _SHA_RE, "revision (a 40-character commit SHA)")
     if source.startswith("hf:"):
         repo = shlex.quote(_checked(source[3:], _REPO_RE, "HuggingFace repo"))
         dest_dir = shlex.quote(f"{_REMOTE_TMP}/{subdir}" if subdir else _REMOTE_TMP)
-        install = ["pip3 install -q huggingface_hub"]
+        install = [f"pip3 install -q 'huggingface_hub=={HF_HUB_VERSION}'"]
         # Authenticate before download so gated repos (e.g. nvidia/Lyra-2.0) work.
         # The modern `hf` CLI does not auto-read HF_TOKEN for gated access, so log
         # in explicitly when a token is provided (no-op token is harmless for public repos).
@@ -92,7 +128,7 @@ def build_commands(source: str, subdir: str, s3_dest: str, region: str) -> list:
             # Download into the cache only (no second --local-dir copy), then move
             # files out to dest_dir so the cache can be pruned as we go.
             f"export HF_HUB_ENABLE_HF_TRANSFER=0 HF_HOME={_REMOTE_TMP}/.hfcache",
-            f"hf download {repo} --local-dir {dest_dir}",
+            f"hf download {repo} --revision {rev} --local-dir {dest_dir}",
             # Remove the duplicate cache blobs now that dest_dir holds real files.
             f"rm -rf {_REMOTE_TMP}/.hfcache {dest_dir}/.cache || true",
             "df -h /tmp | tail -1",
@@ -103,12 +139,17 @@ def build_commands(source: str, subdir: str, s3_dest: str, region: str) -> list:
             sys.exit("Format: torch_hub:<repo>:<entrypoint>")
         repo = _checked(parts[0], _REPO_RE, "torch.hub repo")
         entry = _checked(parts[1], _ENTRY_RE, "torch.hub entrypoint")
-        install = ["pip3 install -q torch --index-url https://download.pytorch.org/whl/cpu"]
+        install = [f"pip3 install -q 'torch=={TORCH_CPU_VERSION}' --index-url https://download.pytorch.org/whl/cpu"]
+        # Clone at the commit and load the local copy. torch.hub only resolves
+        # branch and tag names, so `owner/repo:<sha>` would need
+        # skip_validation=True, which also turns off its fork check.
         download = [
             f"mkdir -p {_REMOTE_TMP}",
+            f"git clone --quiet https://github.com/{repo}.git /tmp/hubsrc",
+            f"git -C /tmp/hubsrc checkout --quiet {rev}",
             f"python3 -c \""
             f"import torch,os,shutil; os.environ['TORCH_HOME']='/tmp/hub'; "
-            f"torch.hub.load('{repo}','{entry}',trust_repo=True); "
+            f"torch.hub.load('/tmp/hubsrc','{entry}',source='local',trust_repo=True); "
             f"[shutil.move(os.path.join('/tmp/hub/hub/checkpoints',f),'{_REMOTE_TMP}/'+f) "
             f"for f in os.listdir('/tmp/hub/hub/checkpoints')]\"",
         ]
@@ -165,9 +206,20 @@ def main():
     parser.add_argument("model", help="Endpoint ID (directory under inference/models/)")
     parser.add_argument("--source", required=True, help="hf:<repo> or torch_hub:<repo>:<entrypoint>")
     parser.add_argument("--subdir", default="", help="Subdirectory within S3 prefix")
+    parser.add_argument("--revision", default="",
+                        help="Commit SHA to stage (default: the revision pinned in endpoint.yaml)")
     parser.add_argument("--region", default=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
     args = parser.parse_args()
     _checked(args.model, _MODEL_RE, "model id")
+
+    # Resolve the revision before touching AWS, so an unpinned run never starts a build.
+    revision = args.revision
+    if not revision and args.source.startswith("hf:"):
+        revision = manifest_revision(args.model, args.source[3:], args.subdir) or ""
+    if not revision:
+        sys.exit(f"No revision for {args.source}: add `revision: <commit sha>` to its entry in "
+                 f"inference/models/{args.model}/endpoint.yaml, or pass --revision <sha>.")
+    _checked(revision, _SHA_RE, "revision (a 40-character commit SHA)")
 
     account = run(["aws", "sts", "get-caller-identity", "--query", "Account", "--output", "text"]).stdout.strip()
     if not account:
@@ -178,7 +230,7 @@ def main():
     if args.subdir:
         s3_dest = s3_dest.rstrip("/") + "/" + args.subdir + "/"
 
-    commands = build_commands(args.source, args.subdir, s3_dest, args.region)
+    commands = build_commands(args.source, args.subdir, s3_dest, args.region, revision)
     buildspec = json.dumps({
         "version": "0.2",
         "phases": {"build": {"commands": commands}},
@@ -200,7 +252,7 @@ def main():
         env_overrides.append({"name": "HF_TOKEN", "value": HF_TOKEN_SECRET, "type": "SECRETS_MANAGER"})
 
     print(f"  Model:   {args.model}")
-    print(f"  Source:  {args.source}")
+    print(f"  Source:  {args.source} @ {revision}")
     print(f"  Target:  {s3_dest}")
     print()
 
