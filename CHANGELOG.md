@@ -11,6 +11,8 @@ the cartridge and its new image version.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-26
+
 ### Added
 
 - **Matrix Game 2 cartridge** (`matrix-game-2`, image `0.1.0`): Skywork's real-time
@@ -24,6 +26,9 @@ the cartridge and its new image version.
   free capacity for a cartridge before you deploy, by probing with short-lived targeted
   On-Demand Capacity Reservations that it always cancels. Each cartridge now declares
   `gpu_count` and `gpu_memory_gb` in `endpoint.yaml`. See [docs/CAPACITY.md](docs/CAPACITY.md).
+- **Versioned releases**: a solution version in `VERSION`, this changelog, and a GitHub
+  Release with the CycloneDX SBOM attached for each `vX.Y.Z` tag. See
+  [docs/RELEASING.md](docs/RELEASING.md).
 - **Cosmos 3 forward dynamics**: `cosmos3-nano` takes a start image plus an action
   trajectory (`action_mode`, `domain_name`, `view_point`, `raw_actions`,
   `resolution_tier`) and generates the video that follows. Each new input is bounded
@@ -124,5 +129,6 @@ and its first sync. Reconstructed from the commit history; earlier work was not 
 - Remediation of the internal security review findings, including deployment-name
   validation and a mandatory alarm subscriber.
 
-[Unreleased]: https://github.com/awslabs/world-models-inference/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/awslabs/world-models-inference/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/awslabs/world-models-inference/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/awslabs/world-models-inference/releases/tag/v0.1.0
