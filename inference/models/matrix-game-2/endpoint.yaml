@@ -1,0 +1,53 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Matrix Game 2.0 — real-time interactive world model (Skywork)
+# https://github.com/SkyworkAI/Matrix-Game (Matrix-Game-2/) · weights: Skywork/Matrix-Game-2.0
+#
+# Interaction: real-time. No `sagemaker.output` key on purpose — the framework
+# infers real-time mode from its absence, and the runner implements stream().
+#
+# Compute target: g6e.4xlarge (1x L40S 48GB), the shape this cartridge was
+# validated on: 14.5 fps at 640x352 through the endpoint, first frame in
+# 1.9 s, 147 ms input lag (2026-10-04). On-demand, no Capacity Block needed.
+# The model is single-GPU by construction, so more GPUs buy nothing; a faster
+# single GPU is the only lever. Alternatives, set with
+# INSTANCE_TYPE=<type> ./deploy.sh matrix-game-2:
+#
+#   p5.4xlarge   1x H100   17-20 fps — the booth engine at AWS Summit Dubai;
+#                          not yet measured with this image. Usually needs a
+#                          Capacity Block.
+#   g6e.2xlarge  1x L40S   same GPU, fewer vCPUs; the Paris booth ran on it
+#
+# Weights: the whole HF repo is ~20GB; the runner reads ~11GB of it (the
+# distilled universal DiT, the Wan 2.1 VAE, the CLIP encoder and its tokenizer).
+
+model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/matrix-game-2/
+version: 0.1.0
+
+# torch 2.8 + Python 3.10 + a prebuilt flash-attn 2.8.3 wheel. See Dockerfile
+# for why each of those, and not the newer pins upstream suggests.
+
+sagemaker:
+  instance: ml.g6e.2xlarge
+  scale: { min: 0, max: 1 }
+  max_concurrent: 1   # stateful session — one player per container
+
+#   python scripts/stage-weights.py matrix-game-2 --source hf:Skywork/Matrix-Game-2.0
+hf:
+  - { repo: Skywork/Matrix-Game-2.0, subdir: "", revision: 08c42d1a99e57e79df60a964bb815618cdf460f8 }
+
+ec2:
+  instance: g6e.4xlarge
+  volume_size: 150
+
+# Validated on 1x L40S (48 GB), 2026-10-04; the booth engine also ran on H100
+gpu_count: 1
+gpu_memory_gb: 48
+
+# --- Weights licence ---------------------------------------------------------
+# Verified 2026-10-02: HF tag mit. Upstream SkyworkAI/Matrix-Game is MIT and is
+# cloned into the image (pinned 71c3cd7), not vendored here.
+license: MIT
+license_url: https://huggingface.co/Skywork/Matrix-Game-2.0
+license_restricted: false

@@ -39,6 +39,11 @@ ec2:
   instance: p5.48xlarge
   volume_size: 500
 
+# --- GPU requirement (read by scripts/capacity.py) -------------------------
+# torchrun --nproc_per_node=8 --ulysses_size 8 on 80 GB GPUs
+gpu_count: 8
+gpu_memory_gb: 80
+
 # --- Weights licence ---------------------------------------------------------
 # Verified 2026-09-21: HF tag apache-2.0. Upstream SkyworkAI/Matrix-Game is MIT
 # and is cloned into the image (pinned 71c3cd7), not vendored here.

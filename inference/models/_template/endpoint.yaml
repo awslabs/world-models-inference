@@ -39,6 +39,11 @@ ec2:
   instance: g6e.2xlarge     # smallest GPU that fits your model
   volume_size: 200          # GB; must exceed your weights
 
+# --- GPU requirement (read by scripts/capacity.py) -------------------------
+# smallest GPU count and per-GPU memory your model runs on
+gpu_count: 1
+gpu_memory_gb: 24
+
 sagemaker:
   instance: ml.g6e.2xlarge
   scale: { min: 0, max: 1 }

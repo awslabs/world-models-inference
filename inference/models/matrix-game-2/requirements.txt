@@ -1,0 +1,27 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runtime requirements for matrix-game-2 (torch and flash-attn are installed
+# first by the Dockerfile; nothing here may pull a different torch).
+#
+# Pinned to what `pip freeze` reported inside the validated image (2026-10-04).
+# This is the set that ran the model at the AWS Summit Dubai booth, not
+# upstream's requirements.txt, which also drags in TensorRT, ONNX, wandb,
+# flask and CLIP-from-git for paths this runner never touches.
+
+transformers==4.57.3
+diffusers==0.35.0
+accelerate==1.15.0
+safetensors==0.8.0
+huggingface-hub==0.36.2
+numpy==1.26.4
+pillow==11.3.0
+scipy==1.15.3
+einops==0.8.2
+omegaconf==2.3.1
+easydict==1.13
+ftfy==6.3.1
+imageio==2.38.0
+imageio-ffmpeg==0.6.0
+loguru==0.7.3
+simplejpeg==1.9.0

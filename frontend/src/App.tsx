@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { LobbyScreen } from '@/components/LobbyScreen';
 import { GameCanvas } from '@/components/GameCanvas';
 import { Catalogue } from '@/components/Catalogue';
+import { HostedSignIn } from '@/components/HostedSignIn';
 
 import '@/styles/App.css';
 
@@ -45,7 +46,9 @@ function App() {
   // pointing at a live EC2 endpoint. No auth, no lobby, no WebSocket.
   const uiMode = (() => { try { return getConfig().ui || 'worlds'; } catch { return 'worlds'; } })();
   const apiUrl = (() => { try { return getConfig().lingbotApiUrl; } catch { return ''; } })();
+  const hostedAuth = (() => { try { return getConfig().auth === 'hosted'; } catch { return false; } })();
   if (uiMode === 'lingbot') {
+    const catalogue = <Catalogue endpointUrl={apiUrl} />;
     return (
       <div className="min-h-screen relative overflow-hidden flex flex-col bg-game-bg">
         {/* Animated blurred atmospheric background (matches LobbyScreen) */}
@@ -55,7 +58,7 @@ function App() {
         />
         {/* Content */}
         <div className="relative z-1 max-w-[1200px] w-full mx-auto px-6 py-6 flex-1">
-          <Catalogue endpointUrl={apiUrl} />
+          {hostedAuth ? <HostedSignIn>{catalogue}</HostedSignIn> : catalogue}
         </div>
       </div>
     );

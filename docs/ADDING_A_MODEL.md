@@ -98,13 +98,11 @@ ALB ingress rule and bucket import flags).
 
 ## 5. Document it and surface it in the UI
 
-Three places, and `tests/test_cartridge_parity.py` enforces most of it, so a stale
-page cannot merge. What it actually checks: all three exist for every cartridge; the
-card's and the table's `instance` both match `endpoint.yaml`; the card's `deploy`
-targets are a subset of what the manifest declares; `fps > 0` exactly when the
-manifest describes a real-time endpoint; the `restricted` flag matches
-`license_restricted`; and the table's **Wired?** marker agrees with the card's
-`build`. What it does *not* check is prose — no test can tell whether your measured
+Three places. `tests/test_cartridge_contract.py` pins the catalogue to the manifests:
+every card id must have an `inference/models/` directory and vice versa, the card's
+`instance` must match `ec2.instance`, and its `price` must match the verified on-demand
+rate for that instance. Deploy targets, licence flags, `fps` and the **Wired?** column
+are not tested, so check them by hand. What no test checks is prose — no test can tell whether your measured
 numbers are real, so the rest of this section is on you.
 
 1. **`inference/models/my-model/README.md`** — the per-model page, and the one thing a

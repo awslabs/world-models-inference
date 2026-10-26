@@ -7,7 +7,7 @@
 # Compute target: g6e.12xlarge (4×L40S) for single/multi-GPU. p5.48xlarge for max speed.
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/cosmos3-nano/
-version: 0.1.0
+version: 0.1.1
 
 sagemaker:
   instance: ml.g6e.12xlarge
@@ -20,6 +20,11 @@ hf:
 ec2:
   instance: g6e.12xlarge
   volume_size: 200
+
+# --- GPU requirement (read by scripts/capacity.py) -------------------------
+# ~32 GB of weights on one GPU: L40S (48 GB) or larger
+gpu_count: 1
+gpu_memory_gb: 44
 
 # --- Weights licence ---------------------------------------------------------
 # Verified 2026-09-21: HF reports `license: other` with

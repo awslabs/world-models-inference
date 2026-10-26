@@ -326,3 +326,19 @@ def test_security_config_propagates_the_missing_dependency(monkeypatch):
     monkeypatch.setattr(cognito_mod, "_IMPORT_ERROR", ModuleNotFoundError("no jwt"))
     with pytest.raises(AuthMisconfigured, match="PyJWT"):
         SecurityConfig()
+
+
+def test_every_cartridge_image_installs_the_shared_serving_requirements():
+    """Each Dockerfile must install inference/lib/requirements.txt (PyJWT among them).
+
+    waypoint-1-5 once inlined its own serving deps without PyJWT: it built, then
+    every container exited at startup on the fail-closed check above.
+    """
+    from pathlib import Path
+
+    models = Path(__file__).resolve().parent.parent / "inference" / "models"
+    missing = [
+        d.name for d in sorted(models.iterdir())
+        if (d / "Dockerfile").is_file() and "inference/lib/requirements.txt" not in (d / "Dockerfile").read_text()
+    ]
+    assert not missing, f"Dockerfiles not installing inference/lib/requirements.txt: {missing}"

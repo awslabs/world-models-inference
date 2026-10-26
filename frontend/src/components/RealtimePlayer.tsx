@@ -13,15 +13,19 @@
 // so this component does NOT reuse useWebSocket — that hook sends a JSON text
 // ping every second. It connects to its own origin (/ws); `./deploy.sh ui`
 // starts the vite dev proxy, which forwards the socket to the ALB and injects
-// the bearer token server-side, so no token ever reaches the browser.
+// the bearer token server-side, so no token ever reaches the browser. The
+// Launch Stack's hosted UI holds the signed-in user's own token instead, and
+// offers it as the `world-model.bearer` subprotocol (a browser WebSocket cannot
+// set an Authorization header).
 
 import { useEffect, useRef, useState } from 'react';
 import { Play, X } from 'lucide-react';
 import { useFrameBuffer } from '@/hooks/useFrameBuffer';
+import { useApiToken } from '@/services/apiToken';
 import type { Cartridge } from '@/data/cartridges';
 
-// Native output is 832x480 (HEIGHT*WIDTH "480*832" on the server).
-const FRAME_W = 832, FRAME_H = 480;
+// Matrix Game 3's native output is 832x480; other cartridges override it.
+const DEFAULT_FRAME: [number, number] = [832, 480];
 
 // Matches CAM_VALUE in actions.py — one camera step per axis per tick. The
 // server clamps to this anyway; sending the exact value keeps motion honest.
@@ -59,20 +63,29 @@ export const RealtimePlayer = ({ cart, onBack }: { cart: Cartridge; onBack: () =
   // preempted the first and both died at 0 frames. One click is one session.
   const [started, setStarted] = useState(false);
 
+  const [frameW, frameH] = cart.frameSize ?? DEFAULT_FRAME;
+
   const { pushFrame, startPlayback, stopPlayback } = useFrameBuffer({ canvasRef, onFpsUpdate: setFps });
+  // Read at connect time through a ref: a token refresh must not reconnect (and
+  // so end) a running session.
+  const apiToken = useApiToken();
+  const tokenRef = useRef(apiToken);
+  tokenRef.current = apiToken;
 
   useEffect(() => {
     if (!started) return;
     setPhase('connecting');
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws`);
+    const url = `${proto}://${window.location.host}/ws`;
+    const token = tokenRef.current;
+    const ws = token ? new WebSocket(url, ['world-model.bearer', token]) : new WebSocket(url);
     ws.binaryType = 'blob';
     wsRef.current = ws;
 
     const sendAction = () => {
       if (ws.readyState !== WebSocket.OPEN) return;
       const k = keysRef.current;
-      const pitch = (k.has('i') ? CAM_STEP : 0) + (k.has('k') ? -CAM_STEP : 0);
+      const pitch = cart.noPitch ? 0 : (k.has('i') ? CAM_STEP : 0) + (k.has('k') ? -CAM_STEP : 0);
       const yaw = (k.has('l') ? CAM_STEP : 0) + (k.has('j') ? -CAM_STEP : 0);
       ws.send(packAction(k, pitch, yaw));
     };
@@ -110,7 +123,7 @@ export const RealtimePlayer = ({ cart, onBack }: { cart: Cartridge; onBack: () =
       if (e.key === 'Escape') { ws.close(); onBack(); return; }
       if (isTyping()) return;
       const k = e.key.toLowerCase();
-      if ('wasdijkl'.includes(k)) {
+      if ((cart.noPitch ? 'wasdjl' : 'wasdijkl').includes(k)) {
         e.preventDefault();
         if (keysRef.current.has(k)) return; // key repeat — nothing changed
         keysRef.current.add(k);
@@ -163,9 +176,12 @@ export const RealtimePlayer = ({ cart, onBack }: { cart: Cartridge; onBack: () =
       <div className="flex-1 flex items-center justify-center overflow-hidden relative">
         <canvas
           ref={canvasRef}
-          width={FRAME_W}
-          height={FRAME_H}
-          className="block max-w-[100vw] max-h-[calc(100vh-90px)] w-auto h-auto bg-black"
+          width={frameW}
+          height={frameH}
+          // Scaled up to the largest size that fits, aspect kept: at its
+          // intrinsic size a 640x352 frame is a postage stamp on a laptop.
+          style={{ width: `min(100vw, calc((100vh - 90px) * ${frameW / frameH}))` }}
+          className="block h-auto bg-black"
         />
 
         {(phase === 'idle' || phase === 'ended') && (
@@ -179,7 +195,7 @@ export const RealtimePlayer = ({ cart, onBack }: { cart: Cartridge; onBack: () =
             <p className="text-xs text-white/45 max-w-sm text-center leading-relaxed">
               {phase === 'ended'
                 ? 'Session ended. Only one session can run at a time — if someone else is playing, starting here takes over.'
-                : 'Takes ~15s to generate the first frame. Then steer with WASD and IJKL.'}
+                : cart.playHint ?? 'Takes ~15s to generate the first frame. Then steer with WASD and IJKL.'}
             </p>
           </div>
         )}
@@ -213,13 +229,13 @@ export const RealtimePlayer = ({ cart, onBack }: { cart: Cartridge; onBack: () =
           ]}
         />
         <KeyPad
-          label="LOOK"
+          label={cart.noPitch ? "TURN" : "LOOK"}
           held={held}
           accent="border-pink-400 bg-pink-500/20 text-pink-200"
           keys={[
-            { k: 'i', arrow: '↑' },
+            cart.noPitch ? null : { k: 'i', arrow: '↑' },
             { k: 'j', arrow: '←' },
-            { k: 'k', arrow: '↓' },
+            cart.noPitch ? null : { k: 'k', arrow: '↓' },
             { k: 'l', arrow: '→' },
           ]}
         />
@@ -247,18 +263,22 @@ const KeyCap = ({ pk, held, accent }: { pk: PadKey; held: boolean; accent: strin
   </kbd>
 );
 
+// A null key leaves a gap of the same size, so a turn-only pad keeps its shape.
+const Slot = ({ pk, held, accent }: { pk: PadKey | null; held: Set<string>; accent: string }) =>
+  pk ? <KeyCap pk={pk} held={held.has(pk.k)} accent={accent} /> : <span className="w-11 h-11" />;
+
 const KeyPad = ({ label, keys, held, accent }: {
   label: string;
-  keys: [PadKey, PadKey, PadKey, PadKey]; // [up, left, down, right]
+  keys: [PadKey | null, PadKey, PadKey | null, PadKey]; // [up, left, down, right]
   held: Set<string>;
   accent: string;
 }) => (
   <div className="flex flex-col items-center gap-1 rounded-xl bg-black/45 border border-white/10 px-3 pt-3 pb-2 backdrop-blur-sm">
-    <KeyCap pk={keys[0]} held={held.has(keys[0].k)} accent={accent} />
+    <Slot pk={keys[0]} held={held} accent={accent} />
     <div className="flex gap-1">
-      <KeyCap pk={keys[1]} held={held.has(keys[1].k)} accent={accent} />
-      <KeyCap pk={keys[2]} held={held.has(keys[2].k)} accent={accent} />
-      <KeyCap pk={keys[3]} held={held.has(keys[3].k)} accent={accent} />
+      <Slot pk={keys[1]} held={held} accent={accent} />
+      <Slot pk={keys[2]} held={held} accent={accent} />
+      <Slot pk={keys[3]} held={held} accent={accent} />
     </div>
     <span className="text-[10px] font-semibold tracking-[0.18em] text-white/35 mt-1">{label}</span>
   </div>

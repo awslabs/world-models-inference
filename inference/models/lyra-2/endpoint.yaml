@@ -36,3 +36,8 @@ hf:
 ec2:
   instance: p5.4xlarge
   volume_size: 500
+
+# --- GPU requirement (read by scripts/capacity.py) -------------------------
+# net peaks ~74 GB; a 48 GB L40S OOMs at load
+gpu_count: 1
+gpu_memory_gb: 80

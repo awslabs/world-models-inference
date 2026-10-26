@@ -33,7 +33,7 @@ instance over loopback removes the WAN and measures generation rate instead of
 delivery rate; the report labels which one it measured.
 
 Usage:
-  benchmark.py --url ws://<host>/ws [--token T] [--seed img.png]
+  WM_BENCH_TOKEN=$(./deploy.sh token) benchmark.py --url ws://<host>/ws [--seed img.png]
                [--seconds 60] [--out report.md] [--json report.json]
 """
 
@@ -44,6 +44,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import math
 import statistics
 import sys
@@ -427,7 +428,8 @@ async def amain() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", required=True, help="ws://host/ws or wss://host/ws")
-    ap.add_argument("--token", default="", help="shared API token, if auth is enabled")
+    ap.add_argument("--token", default=os.environ.get("WM_BENCH_TOKEN", ""),
+                    help="Cognito access token; prefer the WM_BENCH_TOKEN env var (argv shows in ps)")
     ap.add_argument("--seed", help="seed image; omitted → the model's own prior")
     ap.add_argument("--seconds", type=float, default=60.0)
     ap.add_argument("--out", help="write the markdown report here (default: stdout)")

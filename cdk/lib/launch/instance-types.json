@@ -1,0 +1,16 @@
+[
+  "g5.2xlarge",
+  "g5.12xlarge",
+  "g5.48xlarge",
+  "g6.2xlarge",
+  "g6.4xlarge",
+  "g6.12xlarge",
+  "g6e.2xlarge",
+  "g6e.4xlarge",
+  "g6e.12xlarge",
+  "g6e.48xlarge",
+  "p4d.24xlarge",
+  "p5.4xlarge",
+  "p5.48xlarge",
+  "p5en.48xlarge"
+]

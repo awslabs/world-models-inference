@@ -37,6 +37,10 @@ export interface AppConfig {
    *  'lingbot' renders the LingbotGenerator (async video gen against lingbot-fast endpoint).
    *  The ./deploy ui subcommand writes 'lingbot' automatically. */
   ui?: 'worlds' | 'lingbot';
+  /** 'hosted': the UI is served from the endpoint's CloudFront distribution
+   *  (the Launch Stack) and signs in through the Cognito Hosted UI itself,
+   *  rather than relying on the `./deploy.sh ui` proxy for the token. */
+  auth?: 'hosted';
 }
 
 export interface GameState {

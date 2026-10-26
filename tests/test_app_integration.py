@@ -313,6 +313,41 @@ def test_invocations_accepts_realistic_values(monkeypatch):
     assert c.post("/invocations", json=body).status_code == 200
 
 
+_AV_ACTIONS = [[0.1, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]] * 60
+
+
+def test_invocations_forwards_a_forward_dynamics_request(monkeypatch):
+    seen: list = []
+    c = _client(_build_app(monkeypatch, seen_params=seen))
+    body = {"prompt": "You are an autonomous vehicle planning system.", "action_mode": "forward_dynamics",
+            "domain_name": "av", "view_point": "ego_view", "resolution_tier": 480, "chunk_size": 60,
+            "fps": 10, "raw_actions": _AV_ACTIONS}
+    assert c.post("/invocations", json=body).status_code == 200
+    assert seen[-1]["raw_actions"] == _AV_ACTIONS and seen[-1]["domain_name"] == "av"
+
+
+@pytest.mark.parametrize("extra", [
+    {"action_mode": "inverse_dynamics"},
+    {"domain_name": "../etc"},
+    {"view_point": "top_down"},
+    {"action_mode": ["forward_dynamics"]},
+    {"domain_name": {"a": 1}},
+    {"raw_actions": []},
+    {"raw_actions": "[[1,2]]"},
+    {"raw_actions": [[1.0, 2.0], [3.0]]},
+    {"raw_actions": [["1.0"]]},
+    {"raw_actions": [[True]]},
+    {"raw_actions": [[10**400]]},
+    {"raw_actions": [[0.0]] * 257},
+    {"raw_actions": [[0.0] * 33]},
+    {"resolution_tier": 4096},
+])
+def test_invocations_rejects_bad_action_inputs(monkeypatch, extra):
+    c = _client(_build_app(monkeypatch))
+    body = {"prompt": "x", "action_mode": "forward_dynamics", "raw_actions": _AV_ACTIONS, **extra}
+    assert c.post("/invocations", json=body).status_code == 400
+
+
 def test_generate_accepts_the_ui_defaults(monkeypatch):
     """frontend/src/data/gen-profiles.ts sends seed=-1 ("random") by default."""
     c = _client(_build_app(monkeypatch))

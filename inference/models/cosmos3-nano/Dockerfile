@@ -9,11 +9,23 @@ ENV SM_MODEL_DIR=/opt/ml/model
 ENV SM_MODULE_DIR=/opt/ml/code
 ENV SAGEMAKER_BIND_TO_PORT=8080
 
-RUN pip install --no-cache-dir --upgrade numpy && \
-    pip install --no-cache-dir \
+# The base image's scikit-learn, pandas and OpenCV are compiled against numpy 1.x.
+# Letting numpy float to 2.x breaks `import transformers` (via sklearn) at startup
+# with "numpy.dtype size changed". The constraint holds for every pip install below.
+RUN echo "numpy<2" > /etc/pip-constraints.txt
+ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
+
+RUN pip install --no-cache-dir \
     "diffusers @ git+https://github.com/huggingface/diffusers.git@6afdfd9f4e2e2381c5d5cced0dc4262e9e4267bd" \
     accelerate av cosmos_guardrail huggingface_hub imageio imageio-ffmpeg \
     transformers fastapi "uvicorn[standard]" python-multipart pillow
+
+# The base image ships its own OpenCV build (`opencv` 4.7, in dist-packages/cv2),
+# and cosmos_guardrail pulls in opencv-python on top. Two cv2 packages in one tree
+# fail at import ("cv2.dnn has no attribute DictValue"). Keep exactly one.
+RUN pip uninstall -y opencv opencv-python opencv-contrib-python opencv-python-headless || true && \
+    rm -rf /usr/local/lib/python3.10/dist-packages/cv2 && \
+    pip install --no-cache-dir "opencv-python-headless<4.11"
 
 # Shared serving deps, including the Cognito token verifier (lib/cognito.py).
 # Installed from one file so a cartridge cannot ship an image that is missing the

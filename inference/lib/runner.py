@@ -29,6 +29,7 @@ class ActionBuffer:
         self._action: bytes = b""
         self._active = True
         self._new = threading.Event()
+        self._seed: Optional[bytes] = None
 
     def put(self, action: bytes) -> None:
         """Store the latest action (overwrites previous)."""
@@ -46,6 +47,22 @@ class ActionBuffer:
         with self._lock:
             self._new.clear()
             return self._action
+
+    def put_seed(self, payload: bytes) -> None:
+        """Hold a session `start` message apart from the latest action.
+
+        put() keeps only the newest payload, so a `start` followed within
+        milliseconds by a key tick would otherwise be overwritten before the
+        runner read it, and the client's chosen world silently dropped.
+        """
+        with self._lock:
+            self._seed = payload
+
+    def take_seed(self) -> Optional[bytes]:
+        """Return and clear the pending `start` payload, if any."""
+        with self._lock:
+            seed, self._seed = self._seed, None
+            return seed
 
     def close(self) -> None:
         """Signal end of session."""

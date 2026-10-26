@@ -12,6 +12,7 @@ exists, the deploy path works, and an end-to-end invoke has been verified.
 | `lyra-2` | image→3D-world video | async | `p5.4xlarge` | 1× H100 80GB | gated | ✅ end-to-end |
 | `vjepa2` | representation | real-time | `g5.2xlarge` | 1× A10G | ~4 GB | ⚠️ encoder only |
 | `matrix-game-3` | real-time | real-time | `p5.48xlarge` | 8× H100 80GB | ~57 GB | ✅ end-to-end |
+| `matrix-game-2` | real-time | real-time | `g6e.4xlarge` | 1× L40S 48GB | ~20 GB | ✅ end-to-end |
 | `waypoint-1-5` | real-time | real-time | `p5.4xlarge` | 1× H100 80GB | ~12 GB | ✅ end-to-end |
 
 ### Smoke-test cartridges
@@ -105,6 +106,21 @@ property of the model.
 Full detail — the two seams the runner hooks into upstream's batch pipeline, the
 lockstep multi-GPU loop, and every `MG3_*` tuning knob — is in
 [`inference/models/matrix-game-3/README.md`](../inference/models/matrix-game-3/README.md).
+
+### `matrix-game-2`
+
+Upstream: [Matrix Game 2.0](https://github.com/SkyworkAI/Matrix-Game/tree/main/Matrix-Game-2).
+Validated end to end on a `g6e.4xlarge` (1× L40S): **14.5 fps at 640×352, first frame
+in 1.9 s, 147 ms input lag**, measured through the endpoint and played from the
+catalogue UI. The same engine ran 17-20 fps on one H100 at the AWS Summit Dubai booth.
+Single-GPU by construction — more GPUs cannot speed it up.
+
+WASD moves and J/L (or mouse/stick yaw) turns. Pitch is disabled because the model
+handles vertical look badly. Every ~80 s the world re-seeds from its last frame with a
+sub-second pause; that is how it keeps going past its conditioning length.
+
+Detail and the `MG2_*` knobs are in
+[`inference/models/matrix-game-2/README.md`](../inference/models/matrix-game-2/README.md).
 
 ### `waypoint-1-5`
 
@@ -210,5 +226,5 @@ probes `/health` at runtime. Only the cartridge named by `config.js`'s `deployed
 can show `live`, because that is the one this UI is pointed at.
 
 The card list (`frontend/src/data/cartridges.ts`) is maintained by hand alongside
-`inference/models/*/endpoint.yaml`, so `tests/test_cartridge_parity.py` fails the build
-if the two disagree on ids, instance types, deploy targets or licence flags.
+`inference/models/*/endpoint.yaml`, so `tests/test_cartridge_contract.py` fails the build
+if the two disagree on ids, instance types or prices.

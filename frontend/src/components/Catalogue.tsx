@@ -130,7 +130,7 @@ const Card = ({ cart, onClick }: { cart: Cartridge; onClick: () => void }) => (
             </span>
           ))}
         </div>
-        <span className="text-[13px] text-white/50 font-mono">${cart.price.toFixed(2)}/s</span>
+        <span className="text-[13px] text-white/50 font-mono">${(cart.price * 3600).toFixed(2)}/hr</span>
       </div>
     </div>
   </button>

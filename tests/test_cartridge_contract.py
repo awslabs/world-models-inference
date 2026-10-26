@@ -37,18 +37,16 @@ PRICE_PER_SEC = {
     "p5.4xlarge": 0.001911,    # $6.88/hr
     "g6e.12xlarge": 0.002915,  # $10.49/hr
     "g6e.2xlarge": 0.000623,   # $2.24/hr
+    "g6e.4xlarge": 0.000835,   # $3.00/hr
     "g5.2xlarge": 0.000337,    # $1.212/hr
     "g5.12xlarge": 0.001576,   # $5.672/hr
 }
 
 # Known catalogue drift, deferred in MR !13. Shrink these; never grow them
 # without a linked follow-up.
-CATALOGUE_ONLY_IDS = {
-    "vjepa2-ac",      # entry with no matching endpoint directory
-}
+CATALOGUE_ONLY_IDS: set[str] = set()
 UNLISTED_DIRS = {
     "echo-realtime",  # never added to cartridges.ts
-    "vjepa2",         # listed under the stale id vjepa2-ac (see CATALOGUE_ONLY_IDS)
 }
 
 

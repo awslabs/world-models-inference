@@ -20,6 +20,35 @@ The flagship endpoint is **`lingbot-fast`**, an 8-GPU video generator built on
    deploy path works first, start with `echo-async` on a `g5.2xlarge` (~$1.20/hr, no
    weights). See [Troubleshooting](docs/TROUBLESHOOTING.md#gpu-capacity).
 
+## Launch Stack (no local tooling)
+
+> **TO BE DECIDED — not yet published.** The links below are placeholders: the
+> public template bucket, its owner and the Regions are still to be chosen. Until
+> then, publish your own copy with `scripts/publish.py` (see
+> [Launch Stack](docs/LAUNCH_STACK.md#publishing)).
+
+| Region | Launch |
+|---|---|
+| US East (N. Virginia) `us-east-1` | [![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2FTO-BE-DECIDED-us-east-1.s3.us-east-1.amazonaws.com%2FTO-BE-DECIDED%2Fworld-model-launch.template.json&stackName=WorldModel) |
+| US West (Oregon) `us-west-2` | [![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://us-west-2.console.aws.amazon.com/cloudformation/home?region=us-west-2#/stacks/create/review?templateURL=https%3A%2F%2FTO-BE-DECIDED-us-west-2.s3.us-west-2.amazonaws.com%2FTO-BE-DECIDED%2Fworld-model-launch.template.json&stackName=WorldModel) |
+
+1. Choose **Launch Stack** for your Region and sign in to the AWS console.
+2. Pick a cartridge, enter an admin email and the CIDR allowed to reach the
+   endpoint, and acknowledge the IAM capabilities. Licence-restricted cartridges
+   also need **AcceptModelLicense = yes** ([Model licences](docs/MODEL_LICENSES.md)).
+3. Wait. The stack stages the weights and builds the image in your account; for a
+   large model that takes hours, and the stack stays `CREATE_IN_PROGRESS` until it
+   is done (up to 12 h).
+4. Open the **UiUrl** output and sign in with the temporary password Cognito
+   emailed you.
+
+Not sure a GPU is free? `python scripts/capacity.py` scans Regions and AZs for the
+cartridge you pick and hands you a pre-filled Launch Stack link:
+**[GPU capacity wizard](docs/CAPACITY.md)**.
+
+What it creates, what it costs and how to update or remove it:
+**[Launch Stack](docs/LAUNCH_STACK.md)**.
+
 ## Quick start
 
 ```bash
@@ -30,8 +59,8 @@ git clone <this-repo> && cd world-model-inference
 ./deploy.sh cosmos3-nano sagemaker   # deploy to SageMaker instead
 ```
 
-`./deploy.sh` handles CDK bootstrap, dependency installation, image build and stack
-creation.
+`./deploy.sh` handles dependency installation, image build and stack creation. It
+does not bootstrap CDK: run `npx cdk bootstrap` once per account and Region first.
 
 ```bash
 ./deploy.sh list                     # available models
@@ -67,7 +96,7 @@ deployment end to end. Details and caveats: [Endpoints](docs/ENDPOINTS.md).
 
 ## Architecture
 
-![World Model Inference architecture on AWS. The developer runs ./deploy.sh, which starts two AWS CodeBuild projects: one builds the container image and pushes it to Amazon ECR, the other stages model weights into an Amazon S3 artifacts bucket. AWS CDK, through AWS CloudFormation, deploys a VPC across two Availability Zones. An Application Load Balancer in the public subnet is the only public entry point and forwards port 8080 to a single EC2 GPU instance in an Auto Scaling group in a private subnet with no public IP. The instance pulls its image from ECR, syncs weights and writes results over an S3 gateway endpoint, verifies Amazon Cognito access tokens, and runs torchrun: rank 0 serves the API while ranks 1 to N-1 follow in lockstep. The instance loads one of the interchangeable model cartridges per deployment, including waypoint-1-5, matrix-game-3, lingbot-fast, cosmos3-nano, lyra-2 and vjepa2. Amazon SageMaker AI is an optional alternate deploy target, and Amazon CloudWatch collects logs and metrics.](docs/diagrams/architecture-v1-cartridge-platform.png)
+![World Model Inference architecture on AWS. The developer runs ./deploy.sh, which starts two AWS CodeBuild projects: one builds the container image and pushes it to Amazon ECR, the other stages model weights into an Amazon S3 artifacts bucket. AWS CDK, through AWS CloudFormation, deploys a VPC across two Availability Zones. An Application Load Balancer in the public subnet is the only public entry point and forwards port 8080 to a single EC2 GPU instance in an Auto Scaling group in a private subnet with no public IP. The instance pulls its image from ECR, syncs weights and writes results over an S3 gateway endpoint, verifies Amazon Cognito access tokens, and runs torchrun: rank 0 serves the API while ranks 1 to N-1 follow in lockstep. The instance loads one of the interchangeable model cartridges per deployment, including waypoint-1-5, matrix-game-3, matrix-game-2, lingbot-fast, cosmos3-nano, lyra-2 and vjepa2. Amazon SageMaker AI is an optional alternate deploy target, and Amazon CloudWatch holds the build and SageMaker endpoint logs.](docs/diagrams/architecture-v1-cartridge-platform.png)
 
 `./deploy.sh` builds the container image and stages weights via two CodeBuild
 projects, then CDK deploys a two-AZ VPC: an Application Load Balancer is the only
@@ -115,6 +144,8 @@ Before exposing anything to untrusted networks, read
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Failure modes, GPU capacity, Capacity Block Reservations |
 | [Security](docs/SECURITY.md) | Auth, network posture, hardening for production |
 | [Model licences](docs/MODEL_LICENSES.md) | Per-cartridge weights/code licences and the deploy-time gate |
+| [Launch Stack](docs/LAUNCH_STACK.md) | One-click CloudFormation deploy, and publishing the template |
+| [GPU capacity wizard](docs/CAPACITY.md) | Find free GPU capacity for a cartridge before you deploy |
 
 ## Contributing
 

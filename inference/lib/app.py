@@ -106,6 +106,8 @@ GENERATE_PARAM_KEYS = frozenset({
     "guide_scale", "guidance_scale", "use_dmd", "export_ply",
     "chunk_size", "sample_shift",
     "zoom_in_strength", "zoom_out_strength", "num_frames_zoom_in", "num_frames_zoom_out",
+    # Action-conditioned generation (cosmos3-nano forward dynamics).
+    "action_mode", "domain_name", "view_point", "resolution_tier", "raw_actions",
 })
 
 # Upper bounds on the numeric knobs, so one request cannot ask every GPU rank
@@ -117,7 +119,7 @@ GENERATE_PARAM_KEYS = frozenset({
 NUMERIC_PARAM_MAX = {
     "frame_num": 1024, "num_frames": 1024, "num_frames_zoom_in": 1024, "num_frames_zoom_out": 1024,
     "sampling_steps": 200, "num_inference_steps": 200,
-    "height": 4096, "width": 4096, "fps": 120, "chunk_size": 64,
+    "height": 4096, "width": 4096, "fps": 120, "chunk_size": 64, "resolution_tier": 1080,
     "guide_scale": 100, "guidance_scale": 100, "sample_shift": 100,
     "zoom_in_strength": 100, "zoom_out_strength": 100,
     "seed": 2**63 - 1,
@@ -126,11 +128,21 @@ NUMERIC_PARAM_MAX = {
 # seed=-1 to mean "random".
 NUMERIC_PARAM_MIN = {"seed": -(2**63)}
 STRING_PARAM_MAX_CHARS = {"prompt": 8000, "size": 32, "resolution": 32}
+# Action-conditioning choices are closed sets, so nothing free-form reaches the
+# pipeline; raw_actions is a bounded matrix of finite numbers (one row per step).
+ACTION_PARAM_CHOICES = {
+    "action_mode": {"forward_dynamics"},
+    "domain_name": {"av", "camera_pose", "umi"},
+    "view_point": {"ego_view"},
+}
+RAW_ACTIONS_MAX_ROWS = 256
+RAW_ACTIONS_MAX_COLS = 32
 # Counts and dimensions the runners int() — reject "1e3", "12.5" etc. up front
 # with a 400 instead of letting the runner fail with a 500.
 INTEGER_PARAM_KEYS = frozenset({
     "frame_num", "num_frames", "num_frames_zoom_in", "num_frames_zoom_out",
     "sampling_steps", "num_inference_steps", "height", "width", "chunk_size", "seed",
+    "resolution_tier",
 })
 
 
@@ -186,7 +198,7 @@ def invalid_generation_value(params: dict) -> Optional[str]:
             return f"{key} must be a number"
         try:
             number = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return f"{key} must be a number"
         low = NUMERIC_PARAM_MIN.get(key, 0)
         if not math.isfinite(number) or number < low or number > limit:
@@ -201,6 +213,29 @@ def invalid_generation_value(params: dict) -> Optional[str]:
         if key in params and params[key] is not None:
             if not isinstance(params[key], str) or len(params[key]) > limit:
                 return f"{key} must be a string of at most {limit} characters"
+    for key, choices in ACTION_PARAM_CHOICES.items():
+        value = params.get(key)
+        if value is not None and (not isinstance(value, str) or value not in choices):
+            return f"{key} must be one of {', '.join(sorted(choices))}"
+    return _invalid_raw_actions(params.get("raw_actions"))
+
+
+def _invalid_raw_actions(rows) -> Optional[str]:
+    """A reason ``rows`` is not a bounded matrix of finite numbers, or None."""
+    if rows is None:
+        return None
+    if not isinstance(rows, list) or not 0 < len(rows) <= RAW_ACTIONS_MAX_ROWS:
+        return f"raw_actions must be a list of 1 to {RAW_ACTIONS_MAX_ROWS} rows"
+    width = None
+    for row in rows:
+        if not isinstance(row, list) or not 0 < len(row) <= RAW_ACTIONS_MAX_COLS:
+            return f"each raw_actions row must hold 1 to {RAW_ACTIONS_MAX_COLS} numbers"
+        if width is not None and len(row) != width:
+            return "raw_actions rows must all be the same length"
+        width = len(row)
+        for v in row:
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or abs(v) > 1e6 or not math.isfinite(v):
+                return "raw_actions must contain only finite numbers"
     return None
 
 # How many frames may be in flight before the writer waits for the client to
@@ -492,6 +527,7 @@ def _register_streaming(app: FastAPI, runner: Runner, config: SecurityConfig):
                                     credit.set()
                                     continue
                                 if obj.get("type") == "start":
+                                    actions.put_seed(data)
                                     actions.put(data)
                                     await ws.send_json({"type": "started"})
                                     continue

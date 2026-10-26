@@ -113,6 +113,80 @@ def resolve_dockerfile(endpoint_id: str):
     return "inference/Dockerfile.default", True
 
 
+def make_buildspec(endpoint_id: str, registry: str, region: str) -> str:
+    """The image build's buildspec, as a JSON string.
+
+    ``registry`` and ``region`` are shell words, interpolated as they are: the
+    callers pass either validated literals (main) or a CodeBuild environment
+    variable reference such as ``$WM_REGISTRY`` (scripts/launch_buildspecs.py,
+    whose buildspec is fixed when the Launch Stack template is published).
+    """
+    dockerfile, uses_shared = resolve_dockerfile(endpoint_id)
+    version = get_version(endpoint_id)
+    repo_name = f"world-model-{endpoint_id}"
+    image_uri = f"{registry}/{repo_name}:{version}"
+
+    # Registry-based layer cache: CodeBuild hosts are ephemeral (no local layer
+    # cache), so we cache via ECR. Each build pulls the previous image + a
+    # dedicated :buildcache tag as cache sources and writes inline cache metadata
+    # back. Unchanged early layers (base image, deps, the slow CUDA compiles)
+    # become cache hits — only layers at/after the first changed line rebuild.
+    cache_tag = f"{registry}/{repo_name}:buildcache"
+
+    # The shared default Dockerfile is parameterised; a per-model Dockerfile is
+    # self-contained and takes no build args.
+    if uses_shared:
+        parts = [
+            "--build-arg " + shlex.quote(f"MODEL_ID={endpoint_id}"),
+            "--build-arg " + shlex.quote(f"BASE_IMAGE={get_base_image(endpoint_id)}"),
+        ]
+        # Optional, declared in endpoint.yaml.
+        wheel = manifest_scalar(endpoint_id, "flash_attn_wheel")
+        if wheel:
+            checked(wheel, _WHEEL_RE, "endpoint.yaml flash_attn_wheel")
+            parts.append("--build-arg " + shlex.quote(f"FLASH_ATTN_WHEEL={wheel}"))
+        no_deps = manifest_scalar(endpoint_id, "pip_no_deps")
+        if no_deps is not None:
+            checked(no_deps, _FLAG_RE, "endpoint.yaml pip_no_deps")
+            parts.append("--build-arg " + shlex.quote(f"PIP_NO_DEPS={no_deps}"))
+        build_args = " ".join(parts)
+    else:
+        build_args = ""
+
+    buildspec = json.dumps({
+        "version": "0.2",
+        "env": {"variables": {"DOCKER_BUILDKIT": "1"}},
+        "phases": {
+            "pre_build": {
+                "commands": [
+                    f"aws ecr get-login-password --region {region} | docker login --username AWS --password-stdin {registry}",
+                    # Warm the local cache from prior images (ignore failure on first build).
+                    f"docker pull {cache_tag} || docker pull {image_uri} || true",
+                ]
+            },
+            "build": {
+                "commands": [
+                    f"docker build --platform linux/amd64 --provenance=false "
+                    f"--build-arg BUILDKIT_INLINE_CACHE=1 "
+                    f"{build_args} "
+                    f"--cache-from {cache_tag} --cache-from {image_uri} "
+                    f"-t {image_uri} -t {cache_tag} "
+                    f"-f {dockerfile} .",
+                ]
+            },
+            "post_build": {
+                "commands": [
+                    f"docker push {image_uri}",
+                    # Push the cache tag too so the next build can reuse these layers.
+                    f"docker push {cache_tag} || true",
+                    f"echo 'Pushed: {image_uri}'",
+                ]
+            },
+        },
+    })
+    return buildspec
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("model", help="Endpoint ID (directory under inference/models/)")
@@ -195,64 +269,7 @@ def main():
         sys.exit(f"Failed to upload build source to s3://{bucket}/{s3_key}:\n{up.stderr}")
     os.unlink(zip_path)
 
-    # Registry-based layer cache: CodeBuild hosts are ephemeral (no local layer
-    # cache), so we cache via ECR. Each build pulls the previous image + a
-    # dedicated :buildcache tag as cache sources and writes inline cache metadata
-    # back. Unchanged early layers (base image, deps, the slow CUDA compiles)
-    # become cache hits — only layers at/after the first changed line rebuild.
-    cache_tag = f"{account}.dkr.ecr.{args.region}.amazonaws.com/{repo_name}:buildcache"
-
-    # The shared default Dockerfile is parameterised; a per-model Dockerfile is
-    # self-contained and takes no build args.
-    if uses_shared:
-        parts = [
-            "--build-arg " + shlex.quote(f"MODEL_ID={endpoint_id}"),
-            "--build-arg " + shlex.quote(f"BASE_IMAGE={get_base_image(endpoint_id)}"),
-        ]
-        # Optional, declared in endpoint.yaml.
-        wheel = manifest_scalar(endpoint_id, "flash_attn_wheel")
-        if wheel:
-            checked(wheel, _WHEEL_RE, "endpoint.yaml flash_attn_wheel")
-            parts.append("--build-arg " + shlex.quote(f"FLASH_ATTN_WHEEL={wheel}"))
-        no_deps = manifest_scalar(endpoint_id, "pip_no_deps")
-        if no_deps is not None:
-            checked(no_deps, _FLAG_RE, "endpoint.yaml pip_no_deps")
-            parts.append("--build-arg " + shlex.quote(f"PIP_NO_DEPS={no_deps}"))
-        build_args = " ".join(parts)
-    else:
-        build_args = ""
-
-    buildspec = json.dumps({
-        "version": "0.2",
-        "env": {"variables": {"DOCKER_BUILDKIT": "1"}},
-        "phases": {
-            "pre_build": {
-                "commands": [
-                    f"aws ecr get-login-password --region {args.region} | docker login --username AWS --password-stdin {account}.dkr.ecr.{args.region}.amazonaws.com",
-                    # Warm the local cache from prior images (ignore failure on first build).
-                    f"docker pull {cache_tag} || docker pull {image_uri} || true",
-                ]
-            },
-            "build": {
-                "commands": [
-                    f"docker build --platform linux/amd64 --provenance=false "
-                    f"--build-arg BUILDKIT_INLINE_CACHE=1 "
-                    f"{build_args} "
-                    f"--cache-from {cache_tag} --cache-from {image_uri} "
-                    f"-t {image_uri} -t {cache_tag} "
-                    f"-f {dockerfile} .",
-                ]
-            },
-            "post_build": {
-                "commands": [
-                    f"docker push {image_uri}",
-                    # Push the cache tag too so the next build can reuse these layers.
-                    f"docker push {cache_tag} || true",
-                    f"echo 'Pushed: {image_uri}'",
-                ]
-            },
-        },
-    })
+    buildspec = make_buildspec(endpoint_id, f"{account}.dkr.ecr.{args.region}.amazonaws.com", args.region)
 
     print(f"  Model:   {endpoint_id}")
     print(f"  Image:   {image_uri}")

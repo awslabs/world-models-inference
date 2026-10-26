@@ -1,0 +1,99 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# GitLab CI mirror of .github/workflows/ci.yml. No AWS credentials required —
+# everything is offline (unit tests, typechecks, bash syntax). Live deploy tests
+# are gated behind env vars in the test files and only run against a real
+# endpoint. Runs on merge requests and on the default branch.
+
+stages: [test]
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- Python unit tests --------------------------------------------------------
+python-tests:
+  stage: test
+  image: python:3.12-slim
+  before_script:
+    - pip install --no-cache-dir uv
+  # The dev group installs fastapi/httpx so test_security.py and
+  # test_app_integration.py actually run instead of skipping.
+  script:
+    - uv run --group dev python -m pytest tests/ -q
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- CDK typecheck ------------------------------------------------------------
+# tsc is the offline correctness gate; a full `cdk synth` needs credentialed
+# VPC/AMI/SSM lookups, so it is not run in CI.
+cdk-typecheck:
+  stage: test
+  image: node:20
+  # tsc over aws-cdk-lib's large type surface can exhaust the default heap on
+  # small runners (OOM, exit 134). Raise the ceiling.
+  variables:
+    NODE_OPTIONS: "--max-old-space-size=4096"
+  script:
+    - cd cdk
+    - npm ci
+    - npx tsc --noEmit
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- Frontend typecheck + build ----------------------------------------------
+frontend-build:
+  stage: test
+  image: node:20
+  variables:
+    NODE_OPTIONS: "--max-old-space-size=4096"
+  script:
+    - cd frontend
+    - npm ci
+    - npx tsc --noEmit
+    - npm run build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- SBOM + license policy ----------------------------------------------------
+# CycloneDX SBOMs for the frontend bundle, the CDK app and the Python tooling,
+# checked against the distribution license policy and kept as artifacts.
+sbom:
+  stage: test
+  image: node:20
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq python3 curl >/dev/null
+    - curl -LsSf https://astral.sh/uv/0.12.19/install.sh | sh  # pinned: cyclonedx export needs a recent uv
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - mkdir -p sbom
+    - (cd frontend && npm ci && npm sbom --sbom-format cyclonedx --omit dev > ../sbom/frontend.cdx.json)
+    - (cd cdk && npm ci && npm sbom --sbom-format cyclonedx --omit dev > ../sbom/cdk.cdx.json)
+    - uv export --format cyclonedx1.5 --frozen -o sbom/python.cdx.json
+    - uv run --group dev --with pip-licenses==5.5.5 pip-licenses --format=json > sbom/python-licenses.json
+    - python3 scripts/sbom-merge.py sbom/frontend.cdx.json sbom/cdk.cdx.json sbom/python.cdx.json -o sbom/world-model-inference.cdx.json
+    - python3 scripts/license-check.py sbom/frontend.cdx.json sbom/cdk.cdx.json --pip-licenses sbom/python-licenses.json --requirements inference/lib/requirements.txt inference/models/*/requirements.txt --dockerfiles inference/Dockerfile.default inference/models/*/Dockerfile
+  artifacts:
+    paths: [sbom/]
+    expire_in: 90 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- Shell + script syntax ----------------------------------------------------
+script-syntax:
+  stage: test
+  image: python:3.12-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq bash >/dev/null
+  script:
+    - bash -n deploy.sh
+    - python3 -m py_compile scripts/build-image.py scripts/stage-weights.py
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

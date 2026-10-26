@@ -27,6 +27,10 @@ export interface Cartridge {
   license?: string;            // weights license, e.g. 'Apache-2.0'
   licenseUrl?: string;         // link to the license / model card
   restricted?: boolean;        // true → weights license restricts deployment; UI warns, deploy.sh gates
+  // Real-time player overrides; the defaults describe matrix-game-3.
+  playHint?: string;           // shown under START
+  frameSize?: [number, number]; // native output [width, height], so frames are not stretched
+  noPitch?: boolean;           // model ignores vertical look (I/K)
 }
 
 export const CARTRIDGES: Cartridge[] = [
@@ -66,7 +70,7 @@ export const CARTRIDGES: Cartridge[] = [
     id: 'matrix-game-3',
     name: 'Matrix Game 3',
     type: 'real-time',
-    tagline: 'Real-time interactive world model with WASD + mouse control.',
+    tagline: 'Real-time interactive world model — WASD to move, IJKL to look.',
     instance: 'p5.48xlarge',
     gpu: '8× H100 80GB',
     model: '5B params',
@@ -80,10 +84,31 @@ export const CARTRIDGES: Cartridge[] = [
     notes: 'Validated on a real p5.48xlarge: WASD + IJKL over a WebSocket session, JPEG frames back. 832x480, 3-step distilled, int8 + LightVAE. ~35fps sustained on 8 GPUs measured through the endpoint. Actions apply per chunk (57 frames then 40), not per frame.',
   },
   {
+    id: 'matrix-game-2',
+    name: 'Matrix Game 2',
+    type: 'real-time',
+    tagline: 'Skywork real-time world model — WASD + turn, on a single GPU.',
+    instance: 'g6e.4xlarge',
+    gpu: '1× L40S 48GB',
+    model: '1.8B params',
+    fps: 14,
+    price: 0.000835,
+    status: 'ready',
+    deploy: ['ec2'],
+    hue: 280,
+    upstream: 'https://github.com/SkyworkAI/Matrix-Game/tree/main/Matrix-Game-2',
+    license: 'MIT',
+    licenseUrl: 'https://huggingface.co/Skywork/Matrix-Game-2.0',
+    playHint: 'First frame in about 2 seconds. Hold W to walk, A/D to strafe, J/L to turn.',
+    frameSize: [640, 352],
+    noPitch: true,
+    notes: 'Validated on a g6e.4xlarge (1× L40S): 14.5 fps at 640x352 measured through the endpoint, first frame in 1.9 s, 147 ms input lag. The same engine ran 17-20 fps on one H100 at the AWS Summit Dubai booth. WASD moves, J/L turns; vertical look is disabled because the model handles it badly. A sub-second pause about every 80 s is the world re-seeding from its last frame, not a fault.',
+  },
+  {
     id: 'waypoint-1-5',
     name: 'Waypoint 1.5',
     type: 'real-time',
-    tagline: 'Overworld real-time diffusion world model — WASD + mouse on a single H100.',
+    tagline: 'Overworld real-time diffusion world model — WASD + IJKL on a single H100.',
     instance: 'p5.4xlarge',
     gpu: '1× H100 80GB',
     model: 'Waypoint-1.5-1B',
@@ -99,21 +124,21 @@ export const CARTRIDGES: Cartridge[] = [
     notes: 'Internal demo only — not part of the reusable base. Real-time diffusion world model on one GPU. Measured 82 fps delivered at 720p on a p5.4xlarge H100 (fp8 w8a8), 25 fps on an A10G (int8) at the same resolution; <5GB VRAM. Weights are Apache-2.0; the world_engine runtime baked into the image is GPL-3.0.',
   },
   {
-    id: 'vjepa2-ac',
-    name: 'V-JEPA 2-AC',
+    id: 'vjepa2',
+    name: 'V-JEPA 2',
     type: 'representation',
-    tagline: 'Action-conditioned world model for robotics — Meta FAIR JEPA family.',
-    instance: 'g6e.2xlarge',
-    gpu: '1× L40S',
+    tagline: 'Video encoder for robotics and perception — Meta FAIR JEPA family.',
+    instance: 'g5.2xlarge',
+    gpu: '1× A10G',
     model: 'ViT-g/384',
     fps: 30,
-    price: 0.000623,
+    price: 0.000337,
     status: 'cold',
     deploy: ['ec2', 'sagemaker'],
     hue: 220,
     upstream: 'https://github.com/facebookresearch/vjepa2',
     license: 'Apache-2.0',
-    notes: 'Endpoint scaffold present. Needs the VJEPA2 AC inference wrapper hooked into the real-time handler.',
+    notes: 'Encoder scaffold: streams a 16-frame window and returns a pooled embedding plus a change alert per frame. Not yet run on a GPU, so the 30 fps is a design target. The action-conditioned V-JEPA 2-AC wrapper is not hooked up.',
   },
   {
     id: 'lyra-2',

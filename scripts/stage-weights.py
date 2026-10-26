@@ -107,6 +107,17 @@ def manifest_revision(endpoint_id: str, repo: str, subdir: str):
 
 
 def build_commands(source: str, subdir: str, s3_dest: str, region: str, revision: str) -> list:
+    return build_commands_with(source, subdir, shlex.quote(s3_dest), shlex.quote(region), revision)
+
+
+def build_commands_with(source: str, subdir: str, dest_word: str, region_word: str, revision: str) -> list:
+    """build_commands, with the S3 destination and region given as shell words.
+
+    The words are used as they are, so they must already be quoted. The Launch
+    Stack's buildspec is fixed when the template is published, before the account
+    exists, so scripts/launch_buildspecs.py passes "$ARTIFACTS_BUCKET"-style
+    references that CodeBuild expands at run time.
+    """
     if subdir:
         _checked(subdir, _SUBDIR_RE, "--subdir")
     # A commit, never a branch or tag: both can be moved to new content.
@@ -157,7 +168,7 @@ def build_commands(source: str, subdir: str, s3_dest: str, region: str, revision
         sys.exit("Use hf:<repo> or torch_hub:<repo>:<entry>")
 
     upload = [
-        f"aws s3 sync {_REMOTE_TMP}/ {shlex.quote(s3_dest)} --region {shlex.quote(region)}",
+        f"aws s3 sync {_REMOTE_TMP}/ {dest_word} --region {region_word}",
         "echo '=== DONE ==='",
     ]
     return install + download + upload

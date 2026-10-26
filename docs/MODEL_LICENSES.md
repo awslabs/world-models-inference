@@ -29,7 +29,7 @@ layer, CDK, scripts, frontend and the remaining cartridges — is in scope.
 
 ## Licences per cartridge
 
-Verified 2026-09-22 against the Hugging Face model API and the upstream GitHub
+Verified 2026-09-22 (`matrix-game-2` on 2026-10-02) against the Hugging Face model API and the upstream GitHub
 repositories.
 
 | Cartridge | Weights | Weights licence | Upstream code |
@@ -37,6 +37,7 @@ repositories.
 | `cosmos3-nano` | `nvidia/Cosmos3-Nano` | [OpenMDW-1.1](https://openmdw.ai/license/1-1/) | none in repository |
 | `lingbot-fast` | `robbyant/lingbot-world-base-cam`, `robbyant/lingbot-world-fast` | Apache-2.0 | 53 vendored files under `wan/`, Apache-2.0 (`UPSTREAM_LICENSE.txt`) |
 | `matrix-game-3` | `Skywork/Matrix-Game-3.0` | Apache-2.0 | none in repository; `SkyworkAI/Matrix-Game` (MIT) installed into the image |
+| `matrix-game-2` | `Skywork/Matrix-Game-2.0` | MIT | none in repository; `SkyworkAI/Matrix-Game` (MIT) installed into the image |
 | `vjepa2` | `facebook/vjepa2-vitg-fpc64-384` | Apache-2.0 | none in repository; upstream is MIT |
 | `lyra-2` | `nvidia/Lyra-2.0` | NVIDIA Internal Scientific Research and Development Model License (`nvidia-internal-research`) — **Yes, restricted: internal research only** | none in repository; `nv-tlabs/lyra` (Apache-2.0) installed into the image |
 | `echo-async`, `echo-realtime` | none (test fixtures) | Apache-2.0 | none |

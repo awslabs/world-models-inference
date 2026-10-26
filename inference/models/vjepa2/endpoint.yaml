@@ -20,6 +20,11 @@ sagemaker:
 ec2:
   instance: g5.2xlarge
 
+# --- GPU requirement (read by scripts/capacity.py) -------------------------
+# ViT-g/384 fits a 24 GB A10G
+gpu_count: 1
+gpu_memory_gb: 22
+
 # --- Weights licence ---------------------------------------------------------
 # Verified 2026-09-21: HF tag apache-2.0. Upstream facebookresearch/vjepa2 is MIT.
 license: Apache-2.0

@@ -49,8 +49,16 @@ EOF
 }
 
 get_region() {
+  if [ -n "${AWS_REGION:-}" ]; then echo "$AWS_REGION"; return; fi
   aws configure get region 2>/dev/null || echo "us-east-1"
 }
+
+# The CDK app reads its region from CDK_DEFAULT_REGION/AWS_REGION and otherwise
+# falls back to us-east-1, while this script resolves it from the AWS profile.
+# Without this export the two disagree whenever the profile's region isn't
+# us-east-1, and CDK quietly builds a second foundation in the wrong region.
+export AWS_REGION="$(get_region)"
+export CDK_DEFAULT_REGION="${CDK_DEFAULT_REGION:-$AWS_REGION}"
 
 get_account() {
   aws sts get-caller-identity --query Account --output text 2>/dev/null
@@ -154,8 +162,8 @@ ensure_foundation() {
 
   # Always run `cdk deploy` for the foundation stack, even when it already
   # exists. CDK is idempotent — it's a no-op when there's no diff — and running
-  # it every time ensures changes to the foundation (IAM scoping, the shared
-  # API-token SSM read, CodeBuild, etc.) actually reach an existing deployment.
+  # it every time ensures changes to the foundation (IAM scoping, the Cognito
+  # pool, CodeBuild, etc.) actually reach an existing deployment.
   # Skipping on *_COMPLETE, as we used to, silently stranded those changes.
   echo "Deploying/updating foundation stack (VPC, roles, CodeBuild)..."
 
@@ -373,11 +381,24 @@ cmd_status() {
 }
 
 cmd_destroy() {
-  local model="${1:-$DEFAULT_MODEL}"
-  ensure_cdk
-  echo "Destroying WorldModel-$model..."
-  (cd "$CDK_DIR" && npx cdk destroy "WorldModel-$model" --force)
-  echo "✓ WorldModel-$model destroyed"
+  local model="${1:-$DEFAULT_MODEL}" stack region
+  stack="WorldModel-$model"
+  region=$(get_region)
+  # Delete through CloudFormation rather than `cdk destroy`: the CDK app only
+  # synthesises a model stack when given `-c model=<id>` (plus that deploy's other
+  # context), so a bare `cdk destroy WorldModel-<id>` matched nothing and this
+  # used to report success while the GPU kept running.
+  if ! aws cloudformation describe-stacks --stack-name "$stack" --region "$region" >/dev/null 2>&1; then
+    echo "$stack does not exist in $region — nothing to destroy."
+    return 0
+  fi
+  echo "Destroying $stack in $region..."
+  aws cloudformation delete-stack --stack-name "$stack" --region "$region"
+  if ! aws cloudformation wait stack-delete-complete --stack-name "$stack" --region "$region"; then
+    echo "Error: $stack did not delete cleanly — check the CloudFormation console." >&2
+    return 1
+  fi
+  echo "✓ $stack destroyed"
 }
 
 cmd_ui() {
@@ -521,8 +542,10 @@ cmd_bench() {
   ws_url="${ws_url}/ws"
 
   local token=""
-  token=$(aws ssm get-parameter --name "$API_TOKEN_PARAM" --with-decryption \
-    --query Parameter.Value --output text --region "$region" 2>/dev/null || true)
+  token=$(mint_machine_token || true)
+  if [ -z "$token" ]; then
+    echo "  ⚠  Could not mint a Cognito token; the endpoint will answer 1008." >&2
+  fi
 
   # Seed from a real scene so the numbers describe a session a player would have;
   # without one the model starts from its own prior, which is also valid but
@@ -534,8 +557,9 @@ cmd_bench() {
 
   echo "Benchmarking $model for ${seconds}s → $ws_url"
   echo "  (holds the single session; a player will be refused until it finishes)"
-  python3 "$REPO_ROOT/scripts/benchmark.py" \
-    --url "$ws_url" --token "$token" \
+  # Token via the environment, not argv: argv is visible in `ps`.
+  WM_BENCH_TOKEN="$token" python3 "$REPO_ROOT/scripts/benchmark.py" \
+    --url "$ws_url" \
     ${seed:+--seed "$seed"} \
     --seconds "$seconds" \
     --out "$out_dir/performance-report.md" \
@@ -732,6 +756,19 @@ cmd_deploy() {
   fi
   # A Capacity Block is pinned to one AZ, so the ASG must be pinned to the
   # private subnet in that AZ or it will launch in the wrong one and fail.
+  # When only CAPACITY_BLOCK_ID is given, derive that subnet from the block's AZ —
+  # otherwise the first launch attempt can land in the other AZ and fail.
+  if [ -n "${CAPACITY_BLOCK_ID:-}" ] && [ -z "${CAPACITY_SUBNET_IDS:-}" ]; then
+    local cb_az subnets
+    cb_az=$(aws ec2 describe-capacity-reservations --capacity-reservation-ids "$CAPACITY_BLOCK_ID" \
+      --query "CapacityReservations[0].AvailabilityZone" --output text --region "$region" 2>/dev/null || true)
+    subnets=$(read_foundation_param "/world-model/foundation/private-subnet-ids")
+    if [ -n "$cb_az" ] && [ -n "$subnets" ]; then
+      CAPACITY_SUBNET_IDS=$(aws ec2 describe-subnets --subnet-ids ${subnets//,/ } --region "$region" \
+        --query "Subnets[?AvailabilityZone=='$cb_az'].SubnetId" --output text 2>/dev/null | tr '\t' ',')
+      [ -n "$CAPACITY_SUBNET_IDS" ] && echo "  Capacity Block is in $cb_az — pinning the ASG to subnet $CAPACITY_SUBNET_IDS."
+    fi
+  fi
   [ -n "${CAPACITY_SUBNET_IDS:-}" ] && ctx_args+=(-c "capacitySubnets=$CAPACITY_SUBNET_IDS")
   [ -n "${INSTANCE_TYPE:-}" ] && ctx_args+=(-c "instanceType=$INSTANCE_TYPE")
 

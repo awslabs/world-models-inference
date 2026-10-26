@@ -10,6 +10,7 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
@@ -44,6 +45,12 @@ export interface Ec2InferenceProps {
    * time.
    */
   readonly capacitySubnetIds?: string;
+  /**
+   * Apply `capacityReservationId` and `capacitySubnetIds` only when this
+   * condition holds. The Launch Stack takes the reservation as an optional
+   * parameter, so whether there is one is known only at deploy time.
+   */
+  readonly capacityCondition?: cdk.CfnCondition;
   /**
    * How clients reach the endpoint over TLS (EDSR WM-002):
    *
@@ -91,13 +98,40 @@ export interface Ec2InferenceProps {
    * git email.
    */
   readonly notificationEmail?: string;
+  /**
+   * Serve this bucket's static UI from the CloudFront distribution's default
+   * behaviour, with the inference API on its own paths (edge mode only). The UI
+   * and the API then share one origin: no CORS, and the WebSocket Origin is the
+   * distribution's own name.
+   */
+  readonly uiBucket?: s3.IBucket;
+  /**
+   * Ask for one instance as soon as the group exists. deploy.sh does this itself
+   * after the stack lands; the Launch Stack has no deploy.sh to do it.
+   */
+  readonly setDesiredCapacityOnCreate?: boolean;
 }
+
+/**
+ * Inference API paths, routed to the ALB when the distribution also serves the
+ * UI. Keep in sync with inference/lib/app.py routes and frontend/vite.config.ts.
+ */
+const API_PATH_PATTERNS = [
+  '/health', '/ping', '/generate', '/status/*', '/result/*', '/jobs/*',
+  '/examples/*', '/invocations', '/invocations-bidirectional-stream', '/ws',
+];
 
 /**
  * EC2-based inference with ALB for public access.
  * GPU instance in private subnet, ALB in public subnet forwards to port 8080.
  */
 export class Ec2Inference extends Construct {
+  /** https URL of the endpoint (and, with uiBucket, of the UI). */
+  public readonly endpointUrl: string;
+  /** The CloudFront distribution, in edge mode. */
+  public readonly distribution?: cloudfront.Distribution;
+  public readonly autoScalingGroupName: string;
+
   constructor(scope: Construct, id: string, props: Ec2InferenceProps) {
     super(scope, id);
 
@@ -153,8 +187,12 @@ export class Ec2Inference extends Construct {
       '',
       'nvidia-smi',
       '',
+      // The image URI can carry a deploy-time value (the Launch Stack's built
+      // digest), so it is decoded and shape-checked like the model data URI below.
+      `IMAGE_URI=$(echo '${cdk.Fn.base64(props.imageUri)}' | base64 -d)`,
+      '[[ "$IMAGE_URI" =~ ^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/world-model-[a-z0-9-]+(@sha256:[0-9a-f]{64}|:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})$ ]] || { echo "invalid image URI" >&2; exit 1; }',
       `aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${account}.dkr.ecr.${region}.amazonaws.com`,
-      `docker pull "${props.imageUri}"`,
+      'docker pull "$IMAGE_URI"',
       '',
       'if [ -d /opt/dlami/nvme ]; then',
       '  mkdir -p /opt/dlami/nvme/checkpoints',
@@ -180,7 +218,7 @@ export class Ec2Inference extends Construct {
       `  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \\`,
       `  --env-file /etc/world-model.env \\`,
       `  --name world-model \\`,
-      `  "${props.imageUri}"`,
+      '  "$IMAGE_URI"',
       '',
       'echo "Container started."',
     );
@@ -201,19 +239,22 @@ export class Ec2Inference extends Construct {
     // surface either property, hence the overrides on the underlying resource.
     if (props.capacityReservationId) {
       const cfnLaunchTemplate = launchTemplate.node.defaultChild as ec2.CfnLaunchTemplate;
+      const ifCapacity = (value: object) => (props.capacityCondition
+        ? cdk.Fn.conditionIf(props.capacityCondition.logicalId, value, cdk.Aws.NO_VALUE)
+        : value);
       cfnLaunchTemplate.addPropertyOverride(
         'LaunchTemplateData.CapacityReservationSpecification',
-        {
+        ifCapacity({
           CapacityReservationTarget: {
             CapacityReservationId: props.capacityReservationId,
           },
-        },
+        }),
       );
       // P5 Capacity Blocks reject a launch that does not declare this market
       // type; it is not the same as an ordinary on-demand reservation.
-      cfnLaunchTemplate.addPropertyOverride('LaunchTemplateData.InstanceMarketOptions', {
+      cfnLaunchTemplate.addPropertyOverride('LaunchTemplateData.InstanceMarketOptions', ifCapacity({
         MarketType: 'capacity-block',
-      });
+      }));
     }
 
     // Scaling-event notifications. A GPU launch failing for capacity, or the
@@ -271,7 +312,9 @@ export class Ec2Inference extends Construct {
         launchTemplateId: launchTemplate.launchTemplateId!,
         version: launchTemplate.latestVersionNumber,
       },
-      vpcZoneIdentifier: cdk.Fn.split(',', props.capacitySubnetIds || props.subnetIds),
+      vpcZoneIdentifier: cdk.Fn.split(',', props.capacitySubnetIds && props.capacityCondition
+        ? cdk.Fn.conditionIf(props.capacityCondition.logicalId, props.capacitySubnetIds, props.subnetIds).toString()
+        : props.capacitySubnetIds || props.subnetIds),
       targetGroupArns: [],
       notificationConfigurations: [{
         topicArn: scalingEvents.topicArn,
@@ -293,6 +336,9 @@ export class Ec2Inference extends Construct {
 
     const publicSubnetIds = cdk.Fn.split(',', props.publicSubnetIds);
     const edge = !props.certificateArn && !props.allowPlaintext;
+    if (props.uiBucket && !edge) {
+      throw new Error('uiBucket needs the CloudFront edge: it is served from the distribution.');
+    }
     if (props.certificateArn && (!props.endpointDomain || !props.hostedZoneId)) {
       throw new Error('certificateArn requires endpointDomain and hostedZoneId: an ACM certificate '
         + 'cannot cover the ALB\'s own AWS-assigned DNS name, so HTTPS needs a DNS name.');
@@ -411,29 +457,44 @@ export class Ec2Inference extends Construct {
       // so the deployer-IP allowlist moves to the edge. IPv6 is off so every
       // viewer address is IPv4 and the check has no gap.
       const viewerAllowlist = edgeAllowlistFunction(this, props.allowedCidr);
+      const functionAssociations = viewerAllowlist
+        ? [{ function: viewerAllowlist, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST }]
+        : undefined;
+      const apiBehavior: cloudfront.BehaviorOptions = {
+        origin: new origins.HttpOrigin(alb.attrDnsName, {
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+          customHeaders: { 'X-Origin-Verify': verify },
+          readTimeout: cdk.Duration.seconds(60),
+        }),
+        // HTTPS only, not redirect: a redirect would already have carried the
+        // bearer token across the network in plaintext.
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        // Every response is per-caller; nothing may be cached. ALL_VIEWER
+        // forwards Authorization and the WebSocket upgrade headers.
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
+        functionAssociations,
+      };
+      // With a UI, the bucket is the default and the API keeps its own paths.
       const distribution = new cloudfront.Distribution(this, 'Edge', {
         comment: `world-model-${props.deploymentName}`,
         enableIpv6: false,
         priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
-        defaultBehavior: {
-          origin: new origins.HttpOrigin(alb.attrDnsName, {
-            protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
-            customHeaders: { 'X-Origin-Verify': verify },
-            readTimeout: cdk.Duration.seconds(60),
-          }),
-          // HTTPS only, not redirect: a redirect would already have carried the
-          // bearer token across the network in plaintext.
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
-          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-          // Every response is per-caller; nothing may be cached. ALL_VIEWER
-          // forwards Authorization and the WebSocket upgrade headers.
-          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
-          functionAssociations: viewerAllowlist
-            ? [{ function: viewerAllowlist, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST }]
-            : undefined,
-        },
+        defaultBehavior: props.uiBucket
+          ? {
+              origin: origins.S3BucketOrigin.withOriginAccessControl(props.uiBucket),
+              viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+              cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+              functionAssociations,
+            }
+          : apiBehavior,
+        additionalBehaviors: props.uiBucket
+          ? Object.fromEntries(API_PATH_PATTERNS.map((p) => [p, apiBehavior]))
+          : undefined,
+        defaultRootObject: props.uiBucket ? 'index.html' : undefined,
       });
+      this.distribution = distribution;
       endpointUrl = `https://${distribution.distributionDomainName}`;
     } else {
       new elbv2.CfnListener(this, 'HttpListener', {
@@ -447,6 +508,26 @@ export class Ec2Inference extends Construct {
 
     // Attach the ASG to the target group
     asg.targetGroupArns = [targetGroup.ref];
+    this.endpointUrl = endpointUrl;
+    this.autoScalingGroupName = asg.autoScalingGroupName!;
+
+    if (props.setDesiredCapacityOnCreate) {
+      // Create only: a stack update must not undo a scale-in done by hand.
+      const desired = new cr.AwsCustomResource(this, 'DesiredCapacity', {
+        onCreate: {
+          service: 'AutoScaling',
+          action: 'setDesiredCapacity',
+          parameters: { AutoScalingGroupName: asg.ref, DesiredCapacity: 1 },
+          physicalResourceId: cr.PhysicalResourceId.of(`world-model-${props.deploymentName}-desired`),
+        },
+        policy: cr.AwsCustomResourcePolicy.fromStatements([new iam.PolicyStatement({
+          actions: ['autoscaling:SetDesiredCapacity'],
+          resources: [`arn:${cdk.Aws.PARTITION}:autoscaling:${region}:${account}:autoScalingGroup:*:autoScalingGroupName/world-model-${props.deploymentName}`],
+        })]),
+        installLatestAwsSdk: false,
+      });
+      desired.node.addDependency(asg);
+    }
 
     // --- Outputs ---
 
@@ -468,6 +549,16 @@ export class Ec2Inference extends Construct {
  * two integers here, so no context text reaches the function's source.
  */
 function edgeAllowlistFunction(scope: Construct, cidr?: string): cloudfront.Function | undefined {
+  if (cidr && cdk.Token.isUnresolved(cidr)) {
+    // A Launch Stack parameter, known only at deploy time. Its AllowedPattern
+    // admits digits, dots and one slash, so it cannot leave the string literal
+    // it is placed in; the function parses it per request.
+    return new cloudfront.Function(scope, 'ViewerAllowlist', {
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      comment: 'Admit viewers in the allowed CIDR',
+      code: cloudfront.FunctionCode.fromInline(edgeAllowlistRuntimeSource(cidr)),
+    });
+  }
   if (!cidr || cidr === '0.0.0.0/0') return undefined;
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr);
   if (!m || m.slice(1, 5).some((o) => Number(o) > 255) || Number(m[5]) > 32) {
@@ -486,6 +577,21 @@ function edgeAllowlistFunction(scope: Construct, cidr?: string): cloudfront.Func
 /** The viewer-request handler: IPv4 `viewer.ip` masked and compared to BASE. */
 function edgeAllowlistSource(base: number, mask: number): string {
   return `var BASE = ${base}, MASK = ${mask};
+function handler(event) {
+  var p = event.viewer.ip.split('.');
+  if (p.length === 4) {
+    var n = ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0;
+    if (((n & MASK) >>> 0) === BASE) return event.request;
+  }
+  return { statusCode: 403, statusDescription: 'Forbidden' };
+}`;
+}
+
+/** The same handler for a CIDR given as a deploy-time value: BASE and MASK computed from it. */
+function edgeAllowlistRuntimeSource(cidr: string): string {
+  return `var CIDR = '${cidr}'.split('/'), BITS = Number(CIDR[1]), O = CIDR[0].split('.');
+var MASK = BITS === 0 ? 0 : (0xffffffff << (32 - BITS)) >>> 0;
+var BASE = ((((O[0] << 24) | (O[1] << 16) | (O[2] << 8) | O[3]) >>> 0) & MASK) >>> 0;
 function handler(event) {
   var p = event.viewer.ip.split('.');
   if (p.length === 4) {

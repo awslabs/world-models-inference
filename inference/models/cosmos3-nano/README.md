@@ -3,9 +3,9 @@
 NVIDIA's 16B-parameter omnimodal world model. Generates 720p video with synchronised audio, supports action-conditioned world simulation, and runs on 1-8 GPUs.
 
 - **Upstream:** https://github.com/NVIDIA/Cosmos
-- **Weights:** `nvidia/Cosmos3-Nano` on HuggingFace (~32 GB, open access)
+- **Weights:** `nvidia/Cosmos3-Nano` on HuggingFace (~35 GB, open access)
 - **License:** OpenMDW-1.1 (permissive, commercial use allowed, no output restrictions)
-- **Inference time:** ~3-4 min (single L40S) / ~54s (8×H100)
+- **Inference time:** ~3-4 min (4× L40S, `g6e.12xlarge`) / ~54s (8×H100)
 
 ## Capabilities
 
@@ -18,12 +18,13 @@ NVIDIA's 16B-parameter omnimodal world model. Generates 720p video with synchron
 ## Deploy
 
 ```bash
-./deploy --model cosmos3-nano --instance g6e.12xlarge
+./deploy.sh cosmos3-nano                              # g6e.12xlarge, 4x L40S
+INSTANCE_TYPE=p5.48xlarge ./deploy.sh cosmos3-nano    # 8x H100, faster
 ```
 
 ## Instance Options
 
 | Instance | GPUs | Generation Time (189 frames, 720p) | Cost |
 |----------|------|-----------------------------------|----- |
-| g6e.12xlarge | 4×L40S | ~3-4 min | $10/hr |
-| p5.48xlarge | 8×H100 | ~54s | $98/hr |
+| g6e.12xlarge | 4×L40S | ~3-4 min | ~$10.49/hr |
+| p5.48xlarge | 8×H100 | ~54s | ~$55.04/hr |

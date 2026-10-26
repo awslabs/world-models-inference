@@ -35,10 +35,14 @@ ARG WORLD_ENGINE_REF=1.5.6
 RUN pip install --no-cache-dir \
     "world_engine @ https://github.com/Overworldai/world_engine/archive/refs/tags/${WORLD_ENGINE_REF}.zip"
 
-# Serving deps the shared FastAPI app needs, plus fast JPEG for the frame path.
-RUN pip install --no-cache-dir \
-        fastapi "uvicorn[standard]" python-multipart websockets \
-        imageio imageio-ffmpeg pillow numpy simplejpeg
+# Serving deps every cartridge needs (FastAPI, websockets, PyJWT for Cognito
+# token verification) come from one shared file; without it the server fails
+# closed at startup with "No module named 'jwt'".
+COPY inference/lib/requirements.txt /tmp/lib-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/lib-requirements.txt
+
+# Fast JPEG for the frame path.
+RUN pip install --no-cache-dir pillow numpy simplejpeg
 
 # Triton JIT-compiles its CUDA launcher stubs with the host C compiler at
 # runtime ("RuntimeError: Failed to find C compiler" without this). Kept as

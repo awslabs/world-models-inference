@@ -13,6 +13,44 @@ import { Construct } from 'constructs';
 import { cartridgeRepositoryArns, ecrAuthStatement } from './constructs/iam';
 import { describeStack } from './solution';
 
+/** How a foundation is configured: from CDK context, or from Launch Stack parameters. */
+export interface FoundationOptions {
+  /** IPv4 CIDR the ALB security group admits. May be a CloudFormation token. */
+  readonly allowedCidr: string;
+  /** Import the RETAIN'd buckets by name instead of creating them (deploy.sh probes). */
+  readonly importExistingBuckets: boolean;
+  /**
+   * Create the buckets only when this condition holds, and refer to them by
+   * name. The Launch Stack decides at deploy time, from a parameter, what
+   * deploy.sh decides at synth time with `importExistingBuckets`.
+   */
+  readonly createBucketsCondition?: cdk.CfnCondition;
+  /** OAuth callback URLs of the shared browser client. */
+  readonly callbackUrls: string[];
+  /** Invite this address as the first operator (Cognito emails a temporary password). */
+  readonly adminEmail?: string;
+}
+
+/** What the model stacks need from a foundation. */
+export interface FoundationRefs {
+  readonly vpcId: string;
+  readonly privateSubnetIds: string;
+  readonly publicSubnetIds: string;
+  readonly albSecurityGroupId: string;
+  readonly securityGroupId: string;
+  readonly ec2RoleName: string;
+  readonly artifactsBucketName: string;
+  readonly outputsBucketName: string;
+  readonly weightsProjectName: string;
+  readonly imageProjectName: string;
+  readonly userPoolId: string;
+  /** Comma-separated IDs of the shared browser and machine clients. */
+  readonly cognitoClientIds: string;
+  readonly cognitoScope: string;
+  /** https://<prefix>.auth.<region>.amazoncognito.com */
+  readonly cognitoDomain: string;
+}
+
 export class SharedStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, {
@@ -22,6 +60,25 @@ export class SharedStack extends cdk.Stack {
         'foundation',
       ),
     });
+    const importExistingBuckets =
+      this.node.tryGetContext('importExistingBuckets') === true ||
+      this.node.tryGetContext('importExistingBuckets') === 'true';
+    SharedStack.define(this, {
+      allowedCidr: (this.node.tryGetContext('allowedCidr') as string | undefined) || '127.0.0.1/32',
+      importExistingBuckets,
+      callbackUrls: (this.node.tryGetContext('callbackUrls') as string | undefined)
+        ?.split(',')
+        .map(u => u.trim())
+        .filter(Boolean) ?? ['http://localhost:3000/'],
+    });
+  }
+
+  /**
+   * The foundation's resources, defined directly on `stack` so their logical IDs
+   * are the same whether `stack` is this standalone stack or the Launch Stack's
+   * nested foundation (cdk/lib/launch/).
+   */
+  static define(stack: cdk.Stack, opts: FoundationOptions): FoundationRefs {
 
     // --- S3 Buckets (import existing or create) ---
     // The buckets are RETAIN'd (see below), so they outlive `cdk destroy`. That
@@ -33,11 +90,10 @@ export class SharedStack extends cdk.Stack {
     // exist), the default creates them. deploy.sh sets this automatically after an
     // existence probe; see its `bucketsExist` check.
 
-    const artifactsBucketName = `world-model-artifacts-${this.account}-${this.region}`;
-    const outputsBucketName = `world-model-outputs-${this.account}-${this.region}`;
-    const importExistingBuckets =
-      this.node.tryGetContext('importExistingBuckets') === true ||
-      this.node.tryGetContext('importExistingBuckets') === 'true';
+    const artifactsBucketName = `world-model-artifacts-${stack.account}-${stack.region}`;
+    const outputsBucketName = `world-model-outputs-${stack.account}-${stack.region}`;
+    const logsBucketName = `world-model-logs-${stack.account}-${stack.region}`;
+    const { importExistingBuckets } = opts;
 
     // RETAIN so tearing down the stack never deletes build artifacts or outputs.
     // Dedicated bucket for S3 server access logs (DSR: buckets must have access
@@ -45,8 +101,8 @@ export class SharedStack extends cdk.Stack {
     // excluded from logging itself.
     const logsBucket = importExistingBuckets
       ? undefined
-      : new s3.Bucket(this, 'AccessLogsBucket', {
-          bucketName: `world-model-logs-${this.account}-${this.region}`,
+      : new s3.Bucket(stack, 'AccessLogsBucket', {
+          bucketName: logsBucketName,
           blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
           encryption: s3.BucketEncryption.S3_MANAGED,
           enforceSSL: true,
@@ -56,8 +112,8 @@ export class SharedStack extends cdk.Stack {
 
     const makeBucket = (id: string, bucketName: string): s3.IBucket =>
       importExistingBuckets
-        ? s3.Bucket.fromBucketName(this, id, bucketName)
-        : new s3.Bucket(this, id, {
+        ? s3.Bucket.fromBucketName(stack, id, bucketName)
+        : new s3.Bucket(stack, id, {
             bucketName,
             blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
             encryption: s3.BucketEncryption.S3_MANAGED,
@@ -74,9 +130,21 @@ export class SharedStack extends cdk.Stack {
     const artifactsBucket = makeBucket('ArtifactsBucket', artifactsBucketName);
     const outputsBucket = makeBucket('OutputsBucket', outputsBucketName);
 
+    // Launch Stack: the buckets (and their policies) exist only when the
+    // condition holds, so everything else names them rather than referencing them.
+    const bucketCondition = opts.createBucketsCondition;
+    if (bucketCondition) {
+      for (const b of [logsBucket, artifactsBucket, outputsBucket]) {
+        for (const c of b?.node.findAll() ?? []) {
+          if (c instanceof cdk.CfnResource) c.cfnOptions.condition = bucketCondition;
+        }
+      }
+    }
+    const nameOf = (b: s3.IBucket, name: string) => (bucketCondition ? name : b.bucketName);
+
     // --- VPC (public + private subnets, NAT for ECR pulls) ---
 
-    const vpc = new ec2.Vpc(this, 'Vpc', {
+    const vpc = new ec2.Vpc(stack, 'Vpc', {
       vpcName: 'world-model-vpc',
       // GPU capacity is per-AZ, so more AZs means more chances of a p5 launch
       // succeeding: we hit InsufficientInstanceCapacity in both 2a and 2b while
@@ -109,9 +177,8 @@ export class SharedStack extends cdk.Stack {
     // deploy.sh defaults this to the deployer's own public IP (/32), so the
     // one-command flow still works while the endpoint is not world-open. Pass
     // `-c allowedCidr=0.0.0.0/0` to deliberately expose it to the internet.
-    const allowedCidr =
-      (this.node.tryGetContext('allowedCidr') as string | undefined) || '127.0.0.1/32';
-    const albSg = new ec2.SecurityGroup(this, 'AlbSG', {
+    const { allowedCidr } = opts;
+    const albSg = new ec2.SecurityGroup(stack, 'AlbSG', {
       vpc,
       securityGroupName: 'world-model-alb-sg',
       description: 'ALB for World Model Inference endpoints',
@@ -120,7 +187,7 @@ export class SharedStack extends cdk.Stack {
     albSg.addIngressRule(ec2.Peer.ipv4(allowedCidr), ec2.Port.tcp(80), `Allow HTTP from ${allowedCidr}`);
     albSg.addIngressRule(ec2.Peer.ipv4(allowedCidr), ec2.Port.tcp(443), `Allow HTTPS from ${allowedCidr}`);
 
-    const sg = new ec2.SecurityGroup(this, 'InferenceSG', {
+    const sg = new ec2.SecurityGroup(stack, 'InferenceSG', {
       vpc,
       securityGroupName: 'world-model-inference-sg',
       description: 'World Model Inference',
@@ -143,8 +210,8 @@ export class SharedStack extends cdk.Stack {
       `arn:aws:s3:::${outputsBucketName}/*`,
     ];
 
-    const ec2Role = new iam.Role(this, 'EC2Role', {
-      roleName: `WorldModelEC2Role-${this.region}`,
+    const ec2Role = new iam.Role(stack, 'EC2Role', {
+      roleName: `WorldModelEC2Role-${stack.region}`,
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
@@ -168,8 +235,8 @@ export class SharedStack extends cdk.Stack {
     // against the pool's published JWKS. One fewer permission, and no secret on
     // the instance to read or leak.
 
-    const ec2Profile = new iam.CfnInstanceProfile(this, 'EC2Profile', {
-      instanceProfileName: `WorldModelEC2Profile-${this.region}`,
+    const ec2Profile = new iam.CfnInstanceProfile(stack, 'EC2Profile', {
+      instanceProfileName: `WorldModelEC2Profile-${stack.region}`,
       roles: [ec2Role.roleName],
     });
 
@@ -188,7 +255,7 @@ export class SharedStack extends cdk.Stack {
     // a group: CodeBuild names one stream per build, by build ID.
     // Reference: https://docs.aws.amazon.com/codebuild/latest/userguide/setting-up-service-role.html
     const buildLogStatement = (project: string) => {
-      const group = `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/codebuild/${project}`;
+      const group = `arn:aws:logs:${stack.region}:${stack.account}:log-group:/aws/codebuild/${project}`;
       return new iam.PolicyStatement({
         sid: 'CloudWatchLogsBuildProject',
         actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
@@ -201,8 +268,8 @@ export class SharedStack extends cdk.Stack {
     const buildSourcesArn = `${artifactsArn}/_builds/*`;
 
     // Weights: download from Hugging Face / GitHub, sync to the artifacts bucket.
-    const weightsRole = new iam.Role(this, 'WeightsBuildRole', {
-      roleName: `WorldModelWeightsBuildRole-${this.region}`,
+    const weightsRole = new iam.Role(stack, 'WeightsBuildRole', {
+      roleName: `WorldModelWeightsBuildRole-${stack.region}`,
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
     });
     weightsRole.addToPolicy(new iam.PolicyStatement({
@@ -221,8 +288,8 @@ export class SharedStack extends cdk.Stack {
     weightsRole.addToPolicy(buildLogStatement('world-model-weights'));
 
     // Image: read the source zip, build, push to the cartridge repositories.
-    const imageRole = new iam.Role(this, 'ImageBuildRole', {
-      roleName: `WorldModelImageBuildRole-${this.region}`,
+    const imageRole = new iam.Role(stack, 'ImageBuildRole', {
+      roleName: `WorldModelImageBuildRole-${stack.region}`,
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
     });
     imageRole.addToPolicy(new iam.PolicyStatement({
@@ -249,7 +316,7 @@ export class SharedStack extends cdk.Stack {
         'ecr:CompleteLayerUpload',
         'ecr:PutImage',
       ],
-      resources: cartridgeRepositoryArns(this),
+      resources: cartridgeRepositoryArns(stack),
     }));
     imageRole.addToPolicy(buildLogStatement('world-model-image'));
 
@@ -262,7 +329,7 @@ export class SharedStack extends cdk.Stack {
     // version stays readable by explicit version ID until it ages out). No rotation schedule: a HuggingFace token cannot be rotated
     // through any API, so automatic rotation is not possible for this secret.
     // Referenced by name (world-model/hf-token), so no ARN needs publishing.
-    const hfTokenSecret = new secretsmanager.Secret(this, 'HfTokenSecret', {
+    const hfTokenSecret = new secretsmanager.Secret(stack, 'HfTokenSecret', {
       secretName: 'world-model/hf-token', // pragma: allowlist secret - a secret's name, not its value
       description: 'HuggingFace token for staging gated model weights (written by scripts/stage-weights.py)',
     });
@@ -279,7 +346,7 @@ export class SharedStack extends cdk.Stack {
     // ~60 GB base model exhausted the LARGE container ("No space left on
     // device") partway through. X2_LARGE gives a much bigger volume; the timeout
     // is generous because a 60 GB pull plus S3 sync is slow.
-    const weightsProject = new codebuild.Project(this, 'WeightsProject', {
+    const weightsProject = new codebuild.Project(stack, 'WeightsProject', {
       projectName: 'world-model-weights',
       role: weightsRole,
       environment: {
@@ -290,7 +357,7 @@ export class SharedStack extends cdk.Stack {
       buildSpec: defaultSpec,
     });
 
-    const imageProject = new codebuild.Project(this, 'ImageProject', {
+    const imageProject = new codebuild.Project(stack, 'ImageProject', {
       projectName: 'world-model-image',
       role: imageRole,
       environment: {
@@ -316,7 +383,7 @@ export class SharedStack extends cdk.Stack {
     //
     // It lives in the foundation stack, not per-model, so every cartridge shares
     // one identity boundary and adding a cartridge does not mint a new pool.
-    const userPool = new cognito.UserPool(this, 'UserPool', {
+    const userPool = new cognito.UserPool(stack, 'UserPool', {
       userPoolName: 'world-model-inference',
       selfSignUpEnabled: false, // operators are invited; this is not a public app
       signInAliases: { email: true },
@@ -356,17 +423,14 @@ export class SharedStack extends cdk.Stack {
     // A Hosted UI domain is required for the authorization-code and
     // client-credentials flows below. The prefix must be globally unique, so it
     // is account/region qualified.
-    const domainPrefix = `world-model-${this.account}-${this.region}`;
+    const domainPrefix = `world-model-${stack.account}-${stack.region}`;
     const userPoolDomain = userPool.addDomain('UserPoolDomain', {
       cognitoDomain: { domainPrefix },
     });
 
     // Browser client: authorization code + PKCE, no client secret. A public
     // client must never hold a secret — it ships to the browser.
-    const callbackUrls = (this.node.tryGetContext('callbackUrls') as string | undefined)
-      ?.split(',')
-      .map(u => u.trim())
-      .filter(Boolean) ?? ['http://localhost:3000/'];
+    const { callbackUrls } = opts;
     const browserClient = userPool.addClient('BrowserClient', {
       userPoolClientName: 'world-model-browser',
       generateSecret: false,
@@ -403,57 +467,57 @@ export class SharedStack extends cdk.Stack {
 
     // --- SSM Parameters (foundation registry) ---
 
-    new ssm.StringParameter(this, 'ParamVpcId', {
+    new ssm.StringParameter(stack, 'ParamVpcId', {
       parameterName: '/world-model/foundation/vpc-id',
       stringValue: vpc.vpcId,
     });
 
-    new ssm.StringParameter(this, 'ParamPrivateSubnets', {
+    new ssm.StringParameter(stack, 'ParamPrivateSubnets', {
       parameterName: '/world-model/foundation/private-subnet-ids',
       stringValue: vpc.privateSubnets.map(s => s.subnetId).join(','),
     });
 
-    new ssm.StringParameter(this, 'ParamPublicSubnets', {
+    new ssm.StringParameter(stack, 'ParamPublicSubnets', {
       parameterName: '/world-model/foundation/public-subnet-ids',
       stringValue: vpc.publicSubnets.map(s => s.subnetId).join(','),
     });
 
-    new ssm.StringParameter(this, 'ParamAlbSgId', {
+    new ssm.StringParameter(stack, 'ParamAlbSgId', {
       parameterName: '/world-model/foundation/alb-sg-id',
       stringValue: albSg.securityGroupId,
     });
 
-    new ssm.StringParameter(this, 'ParamSgId', {
+    new ssm.StringParameter(stack, 'ParamSgId', {
       parameterName: '/world-model/foundation/sg-id',
       stringValue: sg.securityGroupId,
     });
 
-    new ssm.StringParameter(this, 'ParamEC2ProfileName', {
+    new ssm.StringParameter(stack, 'ParamEC2ProfileName', {
       parameterName: '/world-model/foundation/ec2-profile-name',
       stringValue: ec2Profile.instanceProfileName!,
     });
 
-    new ssm.StringParameter(this, 'ParamEC2RoleName', {
+    new ssm.StringParameter(stack, 'ParamEC2RoleName', {
       parameterName: '/world-model/foundation/ec2-role-name',
       stringValue: ec2Role.roleName,
     });
 
-    new ssm.StringParameter(this, 'ParamArtifactsBucket', {
+    new ssm.StringParameter(stack, 'ParamArtifactsBucket', {
       parameterName: '/world-model/foundation/artifacts-bucket',
-      stringValue: artifactsBucket.bucketName,
+      stringValue: nameOf(artifactsBucket, artifactsBucketName),
     });
 
-    new ssm.StringParameter(this, 'ParamOutputsBucket', {
+    new ssm.StringParameter(stack, 'ParamOutputsBucket', {
       parameterName: '/world-model/foundation/outputs-bucket',
-      stringValue: outputsBucket.bucketName,
+      stringValue: nameOf(outputsBucket, outputsBucketName),
     });
 
-    new ssm.StringParameter(this, 'ParamWeightsProject', {
+    new ssm.StringParameter(stack, 'ParamWeightsProject', {
       parameterName: '/world-model/foundation/weights-project',
       stringValue: weightsProject.projectName,
     });
 
-    new ssm.StringParameter(this, 'ParamImageProject', {
+    new ssm.StringParameter(stack, 'ParamImageProject', {
       parameterName: '/world-model/foundation/image-project',
       stringValue: imageProject.projectName,
     });
@@ -462,34 +526,65 @@ export class SharedStack extends cdk.Stack {
     // WORLD_MODEL_COGNITO_* env vars. The machine client's SECRET is deliberately
     // absent: it is readable from the Cognito API by an authorised caller and must
     // not be copied into a plaintext SSM parameter.
-    new ssm.StringParameter(this, 'ParamUserPoolId', {
+    new ssm.StringParameter(stack, 'ParamUserPoolId', {
       parameterName: '/world-model/foundation/cognito-user-pool-id',
       stringValue: userPool.userPoolId,
     });
 
-    new ssm.StringParameter(this, 'ParamCognitoClientIds', {
+    new ssm.StringParameter(stack, 'ParamCognitoClientIds', {
       parameterName: '/world-model/foundation/cognito-client-ids',
       stringValue: `${browserClient.userPoolClientId},${machineClient.userPoolClientId}`,
     });
 
-    new ssm.StringParameter(this, 'ParamCognitoBrowserClientId', {
+    new ssm.StringParameter(stack, 'ParamCognitoBrowserClientId', {
       parameterName: '/world-model/foundation/cognito-browser-client-id',
       stringValue: browserClient.userPoolClientId,
     });
 
-    new ssm.StringParameter(this, 'ParamCognitoMachineClientId', {
+    new ssm.StringParameter(stack, 'ParamCognitoMachineClientId', {
       parameterName: '/world-model/foundation/cognito-machine-client-id',
       stringValue: machineClient.userPoolClientId,
     });
 
-    new ssm.StringParameter(this, 'ParamCognitoScope', {
+    new ssm.StringParameter(stack, 'ParamCognitoScope', {
       parameterName: '/world-model/foundation/cognito-scope',
       stringValue: 'world-model/invoke',
     });
 
-    new ssm.StringParameter(this, 'ParamCognitoDomain', {
+    new ssm.StringParameter(stack, 'ParamCognitoDomain', {
       parameterName: '/world-model/foundation/cognito-domain',
       stringValue: userPoolDomain.baseUrl(),
     });
+
+    // The first operator. Cognito emails the address a temporary password; there
+    // is no self sign-up, so without this nobody could sign in to a Launch Stack.
+    if (opts.adminEmail) {
+      new cognito.CfnUserPoolUser(stack, 'AdminUser', {
+        userPoolId: userPool.userPoolId,
+        username: opts.adminEmail,
+        desiredDeliveryMediums: ['EMAIL'],
+        userAttributes: [
+          { name: 'email', value: opts.adminEmail },
+          { name: 'email_verified', value: 'true' },
+        ],
+      });
+    }
+
+    return {
+      vpcId: vpc.vpcId,
+      privateSubnetIds: vpc.privateSubnets.map(s => s.subnetId).join(','),
+      publicSubnetIds: vpc.publicSubnets.map(s => s.subnetId).join(','),
+      albSecurityGroupId: albSg.securityGroupId,
+      securityGroupId: sg.securityGroupId,
+      ec2RoleName: ec2Role.roleName,
+      artifactsBucketName,
+      outputsBucketName,
+      weightsProjectName: weightsProject.projectName,
+      imageProjectName: imageProject.projectName,
+      userPoolId: userPool.userPoolId,
+      cognitoClientIds: `${browserClient.userPoolClientId},${machineClient.userPoolClientId}`,
+      cognitoScope: 'world-model/invoke',
+      cognitoDomain: userPoolDomain.baseUrl(),
+    };
   }
 }

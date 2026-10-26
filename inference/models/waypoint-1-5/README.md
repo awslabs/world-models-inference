@@ -53,7 +53,7 @@ Offline coverage:
 | --- | --- |
 | `tests/test_waypoint_1_5.py` | manifest shape, every action wire format, JPEG encoding including the chroma default, and both env knobs falling back rather than raising on a typo |
 | `tests/test_waypoint_1_5_session.py` | a whole session against the real `/ws` route and the real `stream()`, with a fake engine: handshake, four frames per engine step in order, held keys surviving flow-control acks, client seed → reset + append (and applied *once* when the client then goes quiet), single-session refusal, `setup()` reading the encoding knobs off the environment, and the flow window being configurable and disengaging at `0` |
-| `tests/test_cartridge_parity.py` | this manifest, the catalogue card and the `docs/ENDPOINTS.md` row cannot drift on instance type, deploy targets, licence flags or the wired/`build` claim |
+| `tests/test_cartridge_contract.py` | this manifest and the catalogue card cannot drift on id, instance type or price |
 
 `world_engine` and CUDA are not needed for any of them: `uv sync --group dev && uv run pytest tests`.
 

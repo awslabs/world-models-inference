@@ -14,6 +14,11 @@ sagemaker:
 ec2:
   instance: g5.12xlarge
 
+# --- GPU requirement (read by scripts/capacity.py) -------------------------
+# test fixture: four ranks, any GPU
+gpu_count: 4
+gpu_memory_gb: 0
+
 # --- Weights licence ---------------------------------------------------------
 # No third-party weights: this is our own test fixture, Apache-2.0 like the repo.
 license: Apache-2.0

@@ -5,7 +5,7 @@ Async video generation via the upstream [LingBot-World-Fast](https://github.com/
 ## At a glance
 
 - **Upstream repo:** https://github.com/robbyant/lingbot-world
-- **Weights:** `robbyant/lingbot-world-base-cam` + `robbyant/lingbot-world-fast` (~60 GB total)
+- **Weights:** `robbyant/lingbot-world-base-cam` + `robbyant/lingbot-world-fast` (~234 GB total: base-cam ~160 GB + fast ~74 GB)
 - **Compute:** `p5.48xlarge` (8× H100 80GB)
 - **Inference time:** ~60 s per 81-frame clip (~5 s of video @ 16 fps) once warm
 - **Cold start:** ~20 min for first deploy (weight download + flash-attn wheel + model init)

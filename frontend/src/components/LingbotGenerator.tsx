@@ -11,6 +11,7 @@ import { getConfig } from '@/services/config';
 import { BundledExample } from '@/data/lingbot-examples';
 import { profileFor } from '@/data/gen-profiles';
 import { AuthedImg } from '@/components/AuthedImg';
+import { useApiToken } from '@/services/apiToken';
 
 const SIZE_OPTIONS = [
   { label: '480×832',   value: '480*832' },
@@ -83,7 +84,7 @@ export const LingbotGenerator = ({
   const apiUrl = endpointUrl || config.lingbotApiUrl;
   // Present the access token as a Bearer header. The server ignores ?token= on
   // HTTP routes, so images go through AuthedImg rather than a token in the URL.
-  const apiToken = config.apiToken;
+  const apiToken = useApiToken();
   const authHeaders: Record<string, string> = apiToken ? { Authorization: `Bearer ${apiToken}` } : {};
   const profile = profileFor(cartridgeId);
   const firstExample = profile.examples[0] ?? null;

@@ -30,7 +30,7 @@
 # an internal spike/demo; revisit before any redistribution of the image.
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/waypoint-1-5/
-version: 0.1.0
+version: 0.1.1
 
 # Weights licence is Apache-2.0, but the built image contains the GPL-3.0
 # world_engine library, so deploying this cartridge is gated: deploy.sh shows the
@@ -59,3 +59,8 @@ hf:
 ec2:
   instance: p5.4xlarge
   volume_size: 150
+
+# --- GPU requirement (read by scripts/capacity.py) -------------------------
+# <5 GB VRAM; fp8 on Ada/Hopper, int8 on Ampere
+gpu_count: 1
+gpu_memory_gb: 16
