@@ -20,7 +20,7 @@
 # Weights are ~57GB: the distilled 5B DiT plus the T5 encoder and VAE.
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/matrix-game-3/
-version: 0.1.0
+version: 0.1.1
 
 # torch 2.10 + Python 3.12 + a FlashAttention 3 wheel. The shared
 # inference/Dockerfile.default is pinned to torch 2.4 for the LingBot lineage,

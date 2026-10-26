@@ -9,7 +9,7 @@
 # Compute target: p5.48xlarge (8 x H100 80GB). Matches upstream --nproc_per_node=8 --ulysses_size 8.
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/lingbot-fast/
-version: 0.1.0
+version: 0.1.1
 
 # Built by the shared inference/Dockerfile.default (no per-model Dockerfile).
 # Base pinned to an NGC image with torch 2.4 / CUDA 12.6 / Python 3.10, which has

@@ -146,6 +146,8 @@ Before exposing anything to untrusted networks, read
 | [Model licences](docs/MODEL_LICENSES.md) | Per-cartridge weights/code licences and the deploy-time gate |
 | [Launch Stack](docs/LAUNCH_STACK.md) | One-click CloudFormation deploy, and publishing the template |
 | [GPU capacity wizard](docs/CAPACITY.md) | Find free GPU capacity for a cartridge before you deploy |
+| [Releasing](docs/RELEASING.md) | Versioning, cartridge image versions, the changelog and how a release is cut |
+| [Changelog](CHANGELOG.md) | What changed in each release |
 
 ## Contributing
 

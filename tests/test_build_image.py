@@ -10,6 +10,7 @@ cleanly here.
 """
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -95,5 +96,5 @@ def test_flash_attn_wheel_parsed_and_others_none():
 
 
 def test_manifest_scalar_strips_inline_comments():
-    # version: 0.1.0 has no comment; ensure a commented value would be stripped.
-    assert bi.manifest_scalar("echo-async", "version") == "0.1.0"
+    # version: X.Y.Z has no comment; ensure a commented value would be stripped.
+    assert re.fullmatch(r"\d+\.\d+\.\d+", bi.manifest_scalar("echo-async", "version"))

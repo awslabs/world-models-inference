@@ -7,7 +7,7 @@
 # Stage: python scripts/stage-weights.py vjepa2 --source hf:facebook/vjepa2-vitg-fpc64-384
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/vjepa2-vitg-fpc64-384/
-version: 0.1.0
+version: 0.1.1
 
 hf:
   - { repo: facebook/vjepa2-vitg-fpc64-384, subdir: "", revision: 12ca91694b230e0d4b5b0078af6f4ae1d51e933d }

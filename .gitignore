@@ -52,8 +52,10 @@ cdk/cdk.out2/
 # Internal comms
 .slack-messages/
 
-# Claude Code local state
-.claude/
+# Claude Code local state (project skills are tracked; they are internal-only and
+# stripped from the public sync — see AGENTS.md)
+.claude/*
+!.claude/skills/
 docs/superpowers/
 
 strategy/*

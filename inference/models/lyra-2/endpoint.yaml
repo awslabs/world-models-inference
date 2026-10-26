@@ -7,7 +7,7 @@
 # (WORLD_SIZE=1). The runner imports the upstream lyra_2 package (load-once).
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/lyra-2/
-version: 0.1.0
+version: 0.1.1
 
 # The Lyra 2.0 *weights* are under the NVIDIA Internal Scientific Research and
 # Development Model License — internal R&D only; not for production, public

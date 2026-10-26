@@ -53,7 +53,11 @@ cd cdk && npm ci && npx tsc --noEmit
    clear messages.
 3. **Add or update tests** for any behaviour you change.
 4. **Run the checks** below locally.
-5. **Open a pull request** that explains what changed, why, and how you tested it
+5. **Add a changelog entry** under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md)
+   for any change a user would notice, and bump the cartridge's `version:` in
+   `endpoint.yaml` if you changed what goes into its image. See
+   [docs/RELEASING.md](docs/RELEASING.md).
+6. **Open a pull request** that explains what changed, why, and how you tested it
    (for a cartridge: the instance type and measured fps or latency).
 
 ### Before you open a pull request

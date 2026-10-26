@@ -14,5 +14,7 @@ Steps to verify this works:
 ## Checklist
 
 - [ ] Tests pass (`pytest tests/`)
+- [ ] Changelog entry under `## [Unreleased]` in `CHANGELOG.md` (or no user-visible change)
+- [ ] Bumped `version:` in `endpoint.yaml` for any cartridge whose image content changed
 - [ ] Documentation updated (if user-facing change)
 - [ ] No secrets or credentials in the diff

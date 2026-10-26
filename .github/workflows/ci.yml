@@ -12,6 +12,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # release.yml runs the whole of CI on a release tag before publishing.
+  workflow_call:
 
 # Least privilege: CI only reads the repo. Actions are pinned to full commit
 # SHAs (tag in the trailing comment) so a moved or compromised tag cannot change
@@ -34,6 +36,8 @@ jobs:
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - name: Run tests (dev group installs fastapi/httpx so nothing silently skips)
         run: uv run --group dev python -m pytest tests/ -q
+      - name: Release metadata (VERSION, pyproject.toml, CHANGELOG.md agree)
+        run: python3 scripts/release.py check
 
   cdk:
     name: CDK typecheck
@@ -82,7 +86,7 @@ jobs:
       - name: bash -n on deploy.sh
         run: bash -n deploy.sh
       - name: python compile scripts
-        run: python3 -m py_compile scripts/build-image.py scripts/stage-weights.py
+        run: python3 -m py_compile scripts/build-image.py scripts/stage-weights.py scripts/release.py
 
   sbom:
     name: SBOM + license policy
