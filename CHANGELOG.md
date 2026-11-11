@@ -11,6 +11,11 @@ the cartridge and its new image version.
 
 ## [Unreleased]
 
+### Fixed
+
+- Read the latest action through `ActionBuffer.get()` in the real-time runner
+  scaffold, matching the cartridge guide instead of treating the buffer as iterable.
+
 ## [0.2.0] - 2026-10-26
 
 ### Added

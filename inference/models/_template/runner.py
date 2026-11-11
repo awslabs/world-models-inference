@@ -73,7 +73,7 @@ class TemplateRunner(Runner):
     #     return True
     #
     # def stream(self, actions):
-    #     for action in actions:
+    #     while (action := actions.get()) is not None:
     #         yield self.step(action)  # bytes, e.g. an encoded JPEG frame
 
 
