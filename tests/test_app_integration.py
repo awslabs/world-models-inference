@@ -15,6 +15,7 @@ stubbed so the app imports without a GPU.
 """
 
 import importlib
+import json
 import sys
 import tempfile
 import threading
@@ -288,7 +289,7 @@ def test_generate_route_params_are_all_allowlisted():
     _stub_torch()
     import lib.app as app_mod
     for knob in ("prompt", "frame_num", "size", "sampling_steps", "guide_scale", "seed",
-                 "use_dmd", "export_ply"):
+                 "use_dmd", "export_ply", "rig", "task", "seeds"):
         assert knob in app_mod.GENERATE_PARAM_KEYS
 
 
@@ -346,6 +347,48 @@ def test_invocations_rejects_bad_action_inputs(monkeypatch, extra):
     c = _client(_build_app(monkeypatch))
     body = {"prompt": "x", "action_mode": "forward_dynamics", "raw_actions": _AV_ACTIONS, **extra}
     assert c.post("/invocations", json=body).status_code == 400
+
+
+def test_invocations_forwards_a_sim_rollout_request(monkeypatch):
+    """praxis-1: rig + task + seeds reach the runner as sent."""
+    seen: list = []
+    c = _client(_build_app(monkeypatch, seen_params=seen))
+    body = {"rig": "droid", "task": "block_in_bowl", "seeds": [0, 1], "prompt": "Put the red block in the bowl."}
+    assert c.post("/invocations", json=body).status_code == 200
+    assert {k: seen[-1][k] for k in body} == body
+
+
+@pytest.mark.parametrize("extra", [
+    {"rig": "aloha"},
+    {"rig": ["droid"]},
+    {"task": "../etc/passwd"},
+    {"task": "Lift_Cube"},
+    {"task": "lift cube"},
+    {"task": ""},
+    {"task": "x" * 65},
+    {"seeds": []},
+    {"seeds": [0] * 9},
+    {"seeds": [0, 0]},
+    {"seeds": [-1]},
+    {"seeds": [1.5]},
+    {"seeds": [True]},
+    {"seeds": [10**7]},
+    {"seeds": "0,x"},
+    {"seeds": {"a": 1}},
+])
+def test_invocations_rejects_bad_sim_inputs(monkeypatch, extra):
+    c = _client(_build_app(monkeypatch))
+    assert c.post("/invocations", json={"task": "lift_cube", **extra}).status_code == 400
+
+
+def test_generate_forwards_sim_form_fields(monkeypatch):
+    """The multipart form carries seeds comma-separated; they are bounded like JSON ones."""
+    c = _client(_build_app(monkeypatch))
+    ok = {"prompt": "", "rig": "yam", "task": "dice_in_bag", "seeds": "0,1,2"}
+    assert c.post("/generate", data=ok).status_code == 200
+    assert c.post("/generate", data={**ok, "seeds": "0,1,2,3,4,5,6,7,8"}).status_code == 400
+    assert c.post("/generate", data={**ok, "rig": "aloha"}).status_code == 400
+    assert c.post("/generate", data={**ok, "task": "a;b"}).status_code == 400
 
 
 def test_generate_accepts_the_ui_defaults(monkeypatch):
@@ -796,3 +839,84 @@ def test_ping_stays_responsive_while_a_preempted_session_tears_down(monkeypatch)
                     f"/ping stalled {worst:.2f}s — teardown ran on the event loop"
                 )
                 assert second.receive_json()["type"] == "connected"
+
+
+# --------------------------------------------------------------------------
+# /result/<id>/summary — the JSON a runner writes beside its result (praxis-1)
+# --------------------------------------------------------------------------
+
+
+def _app_and_store(monkeypatch, *, auth=False):
+    """The app plus its JobStore, so a test can place a completed job directly."""
+    _stub_torch()
+    (cognito_testing.use_cognito if auth else cognito_testing.disable_auth)(monkeypatch)
+    import lib.app as app_mod
+    importlib.reload(app_mod)
+    from lib.jobs import JobStore
+    from lib.runner import Runner
+
+    class _R(Runner):
+        def setup(self, *a, **k):
+            pass
+
+        def generate(self, **k):
+            return str(Path(tempfile.gettempdir()) / "out.mp4")
+
+    store = JobStore()
+    return app_mod.create_app(_R(), store), store
+
+
+def _completed_job(store, tmp_path, owner, summary=None):
+    out = tmp_path / "job" / "output.mp4"
+    out.parent.mkdir(parents=True)
+    out.write_bytes(b"mp4")
+    if summary is not None:
+        (tmp_path / "job" / "output").mkdir()
+        (tmp_path / "job" / "output" / "summary.json").write_text(json.dumps(summary))
+    store.submit("j1", {}, owner=owner)
+    store.update("j1", status="complete", result_path=str(out))
+    return "j1"
+
+
+def test_summary_served_for_a_completed_job(monkeypatch, tmp_path):
+    from lib.security import LOCAL_PRINCIPAL
+    app, store = _app_and_store(monkeypatch)
+    job = _completed_job(store, tmp_path, LOCAL_PRINCIPAL, {"successes": 1, "episodes": 2})
+    c = _client(app)
+    for path in (f"/result/{job}/summary", f"/jobs/{job}/summary"):
+        r = c.get(path)
+        assert r.status_code == 200 and r.json() == {"successes": 1, "episodes": 2}
+
+
+def test_summary_404_when_the_runner_wrote_none(monkeypatch, tmp_path):
+    from lib.security import LOCAL_PRINCIPAL
+    app, store = _app_and_store(monkeypatch)
+    job = _completed_job(store, tmp_path, LOCAL_PRINCIPAL)
+    assert _client(app).get(f"/result/{job}/summary").status_code == 404
+
+
+def test_summary_409_before_the_job_completes(monkeypatch):
+    from lib.security import LOCAL_PRINCIPAL
+    app, store = _app_and_store(monkeypatch)
+    store.submit("j2", {}, owner=LOCAL_PRINCIPAL)
+    assert _client(app).get("/result/j2/summary").status_code == 409
+
+
+def test_summary_needs_a_token(monkeypatch):
+    app, _ = _app_and_store(monkeypatch, auth=True)
+    assert _client(app).get("/result/nope/summary").status_code == 401
+
+
+def test_summary_hidden_from_another_principal(monkeypatch, tmp_path):
+    app, store = _app_and_store(monkeypatch, auth=True)
+    job = _completed_job(store, tmp_path, "alice", {"successes": 0})
+    c = _client(app)
+    assert c.get(f"/result/{job}/summary", headers=_bearer("mallory")).status_code == 404
+    assert c.get(f"/result/{job}/summary", headers=_bearer("alice")).status_code == 200
+
+
+def test_non_ascii_digit_seed_is_a_400_not_a_500(monkeypatch):
+    # '²'.isdigit() is True but int('²') raises: it used to escape as a 500.
+    c = _client(_build_app(monkeypatch))
+    r = c.post("/generate", data={"prompt": "x", "seeds": "0,²"})
+    assert r.status_code == 400 and "seeds" in r.json()["detail"]

@@ -44,11 +44,23 @@ sw = _load("stage_weights", "stage-weights.py")
 bi = _load("build_image", "build-image.py")
 
 
+def needs_own_ami(model: str) -> bool:
+    """True if the cartridge pins its own AMI (endpoint.yaml ec2.ami_ssm_parameter).
+
+    The Launch Stack's EC2 path (cdk/lib/launch/model.ts) has no per-model AMI yet,
+    so such a cartridge would boot the default DLAMI, whose driver may be too old
+    for its image (praxis-1 is CUDA 13). Deploy those with ./deploy.sh instead.
+    """
+    return bool(re.search(r"^\s+ami_ssm_parameter:\s*\S", (MODELS_DIR / model / "endpoint.yaml").read_text(), re.MULTILINE))
+
+
 def cartridges() -> list:
-    """Every deployable cartridge: inference/models/<id>/endpoint.yaml, minus scaffolds."""
+    """Every cartridge the Launch Stack can deploy: inference/models/<id>/endpoint.yaml,
+    minus scaffolds and minus cartridges that need their own AMI (see needs_own_ami)."""
     return sorted(
         p.name for p in MODELS_DIR.iterdir()
         if p.is_dir() and not p.name.startswith("_") and (p / "endpoint.yaml").is_file()
+        and not needs_own_ami(p.name)
     )
 
 

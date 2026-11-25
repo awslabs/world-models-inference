@@ -85,6 +85,7 @@ Hitting an error? See **[Troubleshooting](docs/TROUBLESHOOTING.md)**.
 | [`cosmos3-nano`](https://github.com/NVIDIA/Cosmos) | video generation | async | `g6e.12xlarge` · 4× L40S | ✅ end-to-end |
 | [`lyra-2`](https://github.com/nv-tlabs/lyra) | image→3D-world video | async | `p5.4xlarge` · 1× H100 | ✅ end-to-end |
 | [`vjepa2`](https://github.com/facebookresearch/vjepa2) | representation | real-time | `g5.2xlarge` · 1× A10G | ⚠️ encoder only |
+| [`praxis-1`](inference/models/praxis-1/README.md) | robot policy (sim rollouts) | async | `p5.4xlarge` · 1× H100 | ✅ end-to-end (EC2) |
 
 The two real-time cartridges have their own READMEs covering the session
 protocol, hardware trade-offs and tuning knobs. For both, **the fps a remote
@@ -117,7 +118,7 @@ Full walkthrough: **[Architecture](docs/ARCHITECTURE.md)**.
 | `g5.2xlarge` | ~$1.20/hr | 1× A10G — cheapest smoke test |
 
 Weight storage is one-off: `lingbot-fast` ~234 GB (~$5.40/mo), `cosmos3-nano`
-~35 GB, `waypoint-1-5` ~12 GB, `vjepa2` ~4 GB. Later launches sync from S3
+~35 GB, `waypoint-1-5` ~12 GB, `vjepa2` ~4 GB, `praxis-1` ~148 GB (gated). Later launches sync from S3
 instead of Hugging Face.
 
 ## Security

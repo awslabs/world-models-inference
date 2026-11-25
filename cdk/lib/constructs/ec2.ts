@@ -22,6 +22,8 @@ export interface Ec2InferenceProps {
   readonly deploymentName: string;
   readonly instanceType: string;
   readonly volumeSize?: number;
+  /** The cartridge's AMI (endpoint.yaml ec2.ami_ssm_parameter); -c amiSsmParameter wins. */
+  readonly amiSsmParameter?: string;
   readonly securityGroupId: string;
   readonly albSecurityGroupId: string;
   readonly subnetIds: string;
@@ -155,6 +157,7 @@ export class Ec2Inference extends Construct {
     // synth is offline and portable. Override with -c amiSsmParameter=<path>.
     const amiSsmParameter =
       (cdk.Stack.of(this).node.tryGetContext('amiSsmParameter') as string | undefined) ||
+      props.amiSsmParameter ||
       '/aws/service/deeplearning/ami/x86_64/oss-nvidia-driver-gpu-pytorch-2.7-ubuntu-22.04/latest/ami-id';
     const ami = ec2.MachineImage.fromSsmParameter(amiSsmParameter, {
       os: ec2.OperatingSystemType.LINUX,

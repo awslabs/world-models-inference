@@ -1,0 +1,60 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Praxis-1 (Runway) — world action model: a video-action robot policy, run in
+# closed loop in MuJoCo (praxis-sim). Async job: task + seeds in, MP4 of every
+# episode (sim cameras + the video the model predicted) out.
+# Upstream: https://github.com/runwayml/praxis-1-oss (pinned in the Dockerfile)
+#
+# Single GPU, >= 80 GB. The runner starts upstream's sim script per job in a
+# child process that owns the GPU, so NPROC_PER_NODE=1 (set in the Dockerfile).
+
+model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/praxis-1/
+version: 0.1.3
+
+mode: async
+
+# Weights, each in its own subdir of the model dir (runner.py reads these paths).
+# The two runwayml repos are GATED on Hugging Face: accept the terms on each model
+# page with your HF account, then export HF_TOKEN before running
+# scripts/stage-weights.py. The token is never stored in this repo or the image.
+#   praxis-1-droid  ~54 GB  single-arm DROID checkpoint (required)
+#   praxis-1-yam    ~54 GB  bimanual YAM checkpoint (only for rig=yam; optional)
+#   wan2_2          ~34 GB  the whole Wan2.2-TI2V-5B repo; only Wan2.2_VAE.pth (2.8 GB) is used
+#   qwen3_5-2b      ~5 GB   frozen text encoder
+hf:
+  - { repo: runwayml/praxis-1-droid, subdir: "praxis-1-droid", revision: 6bb70750663e53592cc38f46e531a5a01a12d291 }
+  - { repo: runwayml/praxis-1-yam, subdir: "praxis-1-yam", revision: b72c4bbc0430d40ef9bc26c49ae6d9773298ee07 }
+  - { repo: Wan-AI/Wan2.2-TI2V-5B, subdir: "wan2_2", revision: 921dbaf3f1674a56f47e83fb80a34bac8a8f203e }
+  - { repo: Qwen/Qwen3.5-2B, subdir: "qwen3_5-2b", revision: 15852e8c16360a2fea060d615a32b45270f8a8fc }
+
+# 1x H100 80 GB. The raw upstream sim was validated on a g7e.2xlarge (RTX PRO
+# 6000 Blackwell, 96 GB), which this repo has no verified price or capacity
+# entry for yet; INSTANCE_TYPE=g7e.2xlarge overrides at deploy time.
+ec2:
+  instance: p5.4xlarge
+  volume_size: 400   # ~148 GB of weights + the image + the kernel cache
+  # The image is CUDA 13 (torch 2.13 cu130), which needs an R580+ driver. The
+  # default PyTorch 2.7 / Ubuntu 22.04 DLAMI ships an older one, so use the
+  # current Base OSS driver AMI (Ubuntu 24.04; driver 620 on 2026-11-20).
+  ami_ssm_parameter: /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id
+
+sagemaker:
+  instance: ml.p5.4xlarge
+  scale: { min: 0, max: 1 }
+  output: s3://world-model-accelerator-outputs-${AWS_ACCOUNT_ID}/praxis-1/
+
+# --- GPU requirement (read by scripts/capacity.py) -------------------------
+# upstream needs >= 80 GB on one GPU (H100 80 GB, RTX PRO 6000 96 GB)
+gpu_count: 1
+gpu_memory_gb: 80
+
+# --- Weights licence ---------------------------------------------------------
+# Verified 2026-11-23 against the Hugging Face model API: runwayml/praxis-1-droid,
+# runwayml/praxis-1-yam, Wan-AI/Wan2.2-TI2V-5B and Qwen/Qwen3.5-2B all report
+# `license: apache-2.0`; the upstream code (runwayml/praxis-1-oss) is Apache-2.0.
+# The runwayml repos are gated (accept terms) but the licence itself is Apache-2.0.
+# See docs/MODEL_LICENSES.md.
+license: Apache-2.0
+license_url: https://huggingface.co/runwayml/praxis-1-droid
+license_restricted: false

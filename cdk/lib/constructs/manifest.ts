@@ -18,6 +18,8 @@ export interface ModelManifest {
   readonly ec2: {
     readonly instance: string;
     readonly volumeSize?: number;
+    /** Public SSM parameter of the AMI, for a cartridge whose image needs a newer driver. */
+    readonly amiSsmParameter?: string;
   };
 }
 
@@ -30,7 +32,7 @@ interface RawManifest {
     output?: string;
     max_concurrent?: number;
   };
-  ec2: { instance: string; volume_size?: number };
+  ec2: { instance: string; volume_size?: number; ami_ssm_parameter?: string };
 }
 
 /**
@@ -96,6 +98,7 @@ export function loadManifest(endpointId: string, accountId: string): ModelManife
     ec2: {
       instance: raw.ec2.instance,
       volumeSize: raw.ec2.volume_size,
+      amiSsmParameter: raw.ec2.ami_ssm_parameter,
     },
   };
 }

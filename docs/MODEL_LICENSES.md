@@ -29,7 +29,7 @@ layer, CDK, scripts, frontend and the remaining cartridges — is in scope.
 
 ## Licences per cartridge
 
-Verified 2026-09-22 (`matrix-game-2` on 2026-10-02) against the Hugging Face model API and the upstream GitHub
+Verified 2026-09-22 (`matrix-game-2` on 2026-10-02, `praxis-1` on 2026-11-23) against the Hugging Face model API and the upstream GitHub
 repositories.
 
 | Cartridge | Weights | Weights licence | Upstream code |
@@ -40,6 +40,7 @@ repositories.
 | `matrix-game-2` | `Skywork/Matrix-Game-2.0` | MIT | none in repository; `SkyworkAI/Matrix-Game` (MIT) installed into the image |
 | `vjepa2` | `facebook/vjepa2-vitg-fpc64-384` | Apache-2.0 | none in repository; upstream is MIT |
 | `lyra-2` | `nvidia/Lyra-2.0` | NVIDIA Internal Scientific Research and Development Model License (`nvidia-internal-research`) — **Yes, restricted: internal research only** | none in repository; `nv-tlabs/lyra` (Apache-2.0) installed into the image |
+| `praxis-1` | `runwayml/praxis-1-droid`, `runwayml/praxis-1-yam` (gated: accept the terms); frozen deps `Wan-AI/Wan2.2-TI2V-5B` (`Wan2.2_VAE.pth`), `Qwen/Qwen3.5-2B` | Apache-2.0 (all four) | none in repository; `runwayml/praxis-1-oss` (Apache-2.0) installed into the image at a pinned commit, with a build-time patch to `praxis/kernels/moe_gemm_triton.py`; MuJoCo Menagerie robot models baked in (Franka Panda Apache-2.0, Robotiq 2F-85 BSD-2-Clause, I2RT YAM MIT) |
 | `echo-async`, `echo-realtime` | none (test fixtures) | Apache-2.0 | none |
 | `waypoint-1-5` | `Overworld/Waypoint-1.5-1B` | Apache-2.0 — **Yes, restricted: the image installs GPL-3.0 `world_engine`; internal demo use only** | none in repository; `world_engine` (GPL-3.0) is installed into the container image only |
 | `lingbot-v2` (not offered) | `robbyant/lingbot-world-v2-14b-causal-fast-diffusers` | CC BY-NC-SA 4.0 — **Yes, restricted: non-commercial** | not integrated: the weights licence is incompatible with this project's intended uses |
@@ -52,6 +53,11 @@ for transparency but not offered as a cartridge.
 `deploy.sh` requires explicit acknowledgement before deploying it. At the time
 of verification the Hugging Face model card for `nvidia/Lyra-2.0` carried no
 licence metadata; confirm the current terms with NVIDIA before any external use.
+
+`praxis-1`'s two Runway repositories are gated on Hugging Face: each user must
+accept the terms on the model page and stage the weights with their own `HF_TOKEN`.
+The gate is an access step, not a licence restriction — the weights are Apache-2.0 —
+so the cartridge is not `license_restricted`.
 
 `waypoint-1-5`'s weights are Apache-2.0, but its image installs the GPL-3.0
 `world_engine` runtime. It is for internal demos only and `deploy.sh` requires

@@ -11,6 +11,44 @@ the cartridge and its new image version.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-25
+
+The first robot-policy cartridge: Runway's Praxis-1, a world action model, with its own
+catalogue page — deploy-tested end to end on EC2. Every cartridge image is rebuilt.
+
+### Added
+
+- **Praxis-1 cartridge** (`praxis-1`, image `0.1.3`): Runway's world action model (a
+  video-action robot policy; Apache-2.0 code and gated Apache-2.0 weights) as an async
+  job that runs closed-loop MuJoCo rollouts on a single-arm (Franka/DROID) or two-arm
+  (YAM) rig — a task and seeds in, one MP4 of every episode (sim cameras plus the video
+  the model imagined) out, success per seed. Needs one 80 GB+ GPU. Deploy-tested end to
+  end on EC2 (g7e, image 0.1.2; 0.1.3 adds only the seeds fix); deploy with `./deploy.sh praxis-1` after staging the weights — see
+  `inference/models/praxis-1/README.md`. Not offered in the one-click Launch Stack yet
+  (it needs its own AMI and gated weights).
+- **Praxis-1 catalogue page:** pick the rig, a task from the sim suite and up to 8 seeds;
+  plays every episode with a success/missed badge per seed.
+- `/generate` and `/invocations` accept `rig`, `task` and `seeds`, each bounded by the
+  allowlist; **`GET /result/<job_id>/summary`** (alias `/jobs/<job_id>/summary`) returns
+  a runner's JSON summary of a completed job, with the same auth and owner scoping as
+  `/result`.
+- **Per-cartridge AMI:** `endpoint.yaml` may set `ec2.ami_ssm_parameter` (a public SSM
+  path) for an image that needs a newer driver; `-c amiSsmParameter` still overrides it,
+  and every other cartridge keeps the default DLAMI.
+
+### Fixed
+
+- `./deploy.sh destroy` reported "nothing to destroy" and exited 0 when the stack check
+  failed for any reason (e.g. expired credentials), leaving the GPU running. Only a
+  missing stack counts as nothing to destroy now; other failures exit 1 with the AWS error.
+- A non-ASCII digit in `seeds` (e.g. `²`) returned a 500 instead of a 400.
+
+### Changed
+
+- Dependencies: `certifi` 2026.4.22 → 2026.10.18 and `vite` 6.4.3 → 6.4.5 (frontend), the two
+  Dependabot bumps already merged on the public mirror.
+- Every cartridge image is rebuilt for the serving-layer change: `cosmos3-nano` 0.1.1 → 0.1.2, `echo-async` 0.1.1 → 0.1.2, `echo-realtime` 0.1.1 → 0.1.2, `lingbot-fast` 0.1.1 → 0.1.2, `lyra-2` 0.1.1 → 0.1.2, `matrix-game-2` 0.1.0 → 0.1.1, `matrix-game-3` 0.1.1 → 0.1.2, `vjepa2` 0.1.1 → 0.1.2, `waypoint-1-5` 0.1.1 → 0.1.2.
+
 ## [0.2.0] - 2026-10-26
 
 ### Added
@@ -129,6 +167,7 @@ and its first sync. Reconstructed from the commit history; earlier work was not 
 - Remediation of the internal security review findings, including deployment-name
   validation and a mandatory alarm subscriber.
 
-[Unreleased]: https://github.com/awslabs/world-models-inference/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/awslabs/world-models-inference/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/awslabs/world-models-inference/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/awslabs/world-models-inference/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/awslabs/world-models-inference/releases/tag/v0.1.0

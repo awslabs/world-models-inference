@@ -108,6 +108,9 @@ GENERATE_PARAM_KEYS = frozenset({
     "zoom_in_strength", "zoom_out_strength", "num_frames_zoom_in", "num_frames_zoom_out",
     # Action-conditioned generation (cosmos3-nano forward dynamics).
     "action_mode", "domain_name", "view_point", "resolution_tier", "raw_actions",
+    # Closed-loop robot-policy rollouts in simulation (praxis-1): which rig, which
+    # task of its suite, and one episode per seed.
+    "rig", "task", "seeds",
 })
 
 # Upper bounds on the numeric knobs, so one request cannot ask every GPU rank
@@ -127,16 +130,24 @@ NUMERIC_PARAM_MAX = {
 # Lower bounds are 0 except where a negative value is meaningful: the UI sends
 # seed=-1 to mean "random".
 NUMERIC_PARAM_MIN = {"seed": -(2**63)}
-STRING_PARAM_MAX_CHARS = {"prompt": 8000, "size": 32, "resolution": 32}
+STRING_PARAM_MAX_CHARS = {"prompt": 8000, "size": 32, "resolution": 32, "task": 64}
 # Action-conditioning choices are closed sets, so nothing free-form reaches the
 # pipeline; raw_actions is a bounded matrix of finite numbers (one row per step).
 ACTION_PARAM_CHOICES = {
     "action_mode": {"forward_dynamics"},
     "domain_name": {"av", "camera_pose", "umi"},
     "view_point": {"ego_view"},
+    "rig": {"droid", "yam"},
 }
 RAW_ACTIONS_MAX_ROWS = 256
 RAW_ACTIONS_MAX_COLS = 32
+# A sim task is an identifier of the cartridge's task registry (lower-case
+# snake_case); the runner checks it against the closed list of its rig.
+TASK_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
+# One closed-loop episode per seed, each a few minutes of GPU time, so the list
+# is short. Seeds are scene seeds: they place the objects and offset the sampler.
+SEEDS_MAX_COUNT = 8
+SEED_VALUE_MAX = 1_000_000
 # Counts and dimensions the runners int() — reject "1e3", "12.5" etc. up front
 # with a 400 instead of letting the runner fail with a 500.
 INTEGER_PARAM_KEYS = frozenset({
@@ -217,7 +228,39 @@ def invalid_generation_value(params: dict) -> Optional[str]:
         value = params.get(key)
         if value is not None and (not isinstance(value, str) or value not in choices):
             return f"{key} must be one of {', '.join(sorted(choices))}"
-    return _invalid_raw_actions(params.get("raw_actions"))
+    task = params.get("task")
+    if task is not None and (not task or not set(task) <= TASK_NAME_CHARS):
+        return "task must be a lower-case task name (letters, digits, underscores)"
+    return _invalid_seeds(params.get("seeds")) or _invalid_raw_actions(params.get("raw_actions"))
+
+
+def _invalid_seeds(value) -> Optional[str]:
+    """A reason ``value`` is not a short list of non-negative integer seeds, or None.
+
+    JSON clients send a list; the multipart /generate form sends a comma-separated
+    string ("0,1,2"). Both are accepted and left as sent; the runner parses them.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [s.strip() for s in value.split(",")]
+        # ASCII digits only: str.isdigit() accepts '²', which int() then rejects (a 500).
+        if not all(s.isascii() and s.isdecimal() for s in items):
+            return "seeds must be comma-separated non-negative integers"
+        numbers = [int(s) for s in items]
+    elif isinstance(value, list):
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in value):
+            return "seeds must be a list of non-negative integers"
+        numbers = value
+    else:
+        return "seeds must be a list of integers or a comma-separated string"
+    if not 0 < len(numbers) <= SEEDS_MAX_COUNT:
+        return f"seeds must hold 1 to {SEEDS_MAX_COUNT} seeds"
+    if any(n < 0 or n > SEED_VALUE_MAX for n in numbers):
+        return f"each seed must be between 0 and {SEED_VALUE_MAX}"
+    if len(set(numbers)) != len(numbers):
+        return "seeds must not repeat"
+    return None
 
 
 def _invalid_raw_actions(rows) -> Optional[str]:
@@ -632,6 +675,9 @@ def _register_jobs(app: FastAPI, jobs: JobStore):
         seed: Optional[str] = Form(None),
         use_dmd: Optional[str] = Form(None),
         export_ply: Optional[str] = Form(None),
+        rig: Optional[str] = Form(None),
+        task: Optional[str] = Form(None),
+        seeds: Optional[str] = Form(None),
     ):
         job_dir = JOB_OUTPUT_DIR / uuid.uuid4().hex
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -673,6 +719,11 @@ def _register_jobs(app: FastAPI, jobs: JobStore):
         # later needs no route change.
         if export_ply is not None:
             params["export_ply"] = _truthy(export_ply)
+        # Sim rollouts (praxis-1). Validated below like every other knob; seeds
+        # arrive as a comma-separated string ("0,1,2").
+        for key, value in (("rig", rig), ("task", task), ("seeds", seeds)):
+            if value is not None:
+                params[key] = value
         problem = invalid_generation_value(params)
         if problem:
             shutil.rmtree(job_dir, ignore_errors=True)
@@ -709,6 +760,27 @@ def _register_jobs(app: FastAPI, jobs: JobStore):
         if not path or not Path(path).exists():
             raise HTTPException(500, "Result file missing")
         return FileResponse(path, media_type="application/octet-stream", filename=f"{job_id}.mp4")
+
+    # A runner may write a JSON summary beside its result, in a sidecar directory
+    # named after it (<job>/output.mp4 -> <job>/output/summary.json); praxis-1
+    # puts the success of every episode there. Same owner scoping as /result; the
+    # path comes from the job store, never from the request.
+    @app.get("/jobs/{job_id}/summary")
+    @app.get("/result/{job_id}/summary")
+    def job_summary(job_id: str, request: Request):
+        entry = jobs.get_owned(job_id, _principal(request))
+        if not entry:
+            raise HTTPException(404)
+        if entry["status"] != "complete":
+            raise HTTPException(409, f"Job status: {entry['status']}")
+        path = entry["result_path"]
+        summary = Path(path).with_suffix("") / "summary.json" if path else None
+        if summary is None or not summary.is_file():
+            raise HTTPException(404, "This job has no summary")
+        try:
+            return JSONResponse(json.loads(summary.read_text()))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(500, "Summary unreadable") from exc
 
     @app.get("/examples/{example_id}/image")
     def example_image(example_id: str):

@@ -388,9 +388,18 @@ cmd_destroy() {
   # synthesises a model stack when given `-c model=<id>` (plus that deploy's other
   # context), so a bare `cdk destroy WorldModel-<id>` matched nothing and this
   # used to report success while the GPU kept running.
-  if ! aws cloudformation describe-stacks --stack-name "$stack" --region "$region" >/dev/null 2>&1; then
-    echo "$stack does not exist in $region — nothing to destroy."
-    return 0
+  # Only "does not exist" means nothing to destroy. Any other failure (expired
+  # credentials, throttling, no network) must not be reported as success: the GPU
+  # would keep running while the operator thinks it is gone.
+  local probe
+  if ! probe=$(aws cloudformation describe-stacks --stack-name "$stack" --region "$region" 2>&1 >/dev/null); then
+    if printf '%s' "$probe" | grep -q "does not exist"; then
+      echo "$stack does not exist in $region — nothing to destroy."
+      return 0
+    fi
+    echo "Error: could not check $stack in $region; nothing was destroyed." >&2
+    printf '%s\n' "$probe" | sed 's/^/  /' >&2
+    return 1
   fi
   echo "Destroying $stack in $region..."
   aws cloudformation delete-stack --stack-name "$stack" --region "$region"

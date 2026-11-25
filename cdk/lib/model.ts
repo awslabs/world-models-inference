@@ -81,6 +81,7 @@ export class ModelStack extends cdk.Stack {
         deploymentName,
         instanceType: props.instanceTypeOverride || manifest.ec2.instance,
         volumeSize: manifest.ec2.volumeSize,
+        amiSsmParameter: manifest.ec2.amiSsmParameter,
         securityGroupId: sgId,
         albSecurityGroupId: albSgId,
         subnetIds: privateSubnets,

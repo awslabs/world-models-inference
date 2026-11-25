@@ -108,3 +108,10 @@ def test_ec2_fields_are_read():
     assert CATALOGUE["lingbot-fast"]["ec2VolumeSize"] == 500
     assert CATALOGUE["echo-async"]["ec2VolumeSize"] == 200  # endpoint.yaml default
     assert CATALOGUE["vjepa2"]["modelDataPrefix"] == "vjepa2-vitg-fpc64-384/"
+
+
+def test_cartridges_that_pin_their_own_ami_are_not_offered():
+    # The Launch Stack cannot pass a per-cartridge AMI yet; praxis-1 needs a CUDA 13 driver.
+    assert lb.needs_own_ami("praxis-1")
+    assert "praxis-1" not in lb.cartridges()
+    assert not lb.needs_own_ami("echo-async") and "echo-async" in lb.cartridges()

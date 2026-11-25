@@ -23,8 +23,7 @@
 # distilled universal DiT, the Wan 2.1 VAE, the CLIP encoder and its tokenizer).
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/matrix-game-2/
-version: 0.1.0
-
+version: 0.1.1
 # torch 2.8 + Python 3.10 + a prebuilt flash-attn 2.8.3 wheel. See Dockerfile
 # for why each of those, and not the newer pins upstream suggests.
 

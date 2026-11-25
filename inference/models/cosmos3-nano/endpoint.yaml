@@ -7,8 +7,7 @@
 # Compute target: g6e.12xlarge (4×L40S) for single/multi-GPU. p5.48xlarge for max speed.
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/cosmos3-nano/
-version: 0.1.1
-
+version: 0.1.2
 sagemaker:
   instance: ml.g6e.12xlarge
   scale: { min: 0, max: 2 }

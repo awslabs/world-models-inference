@@ -11,6 +11,7 @@ exists, the deploy path works, and an end-to-end invoke has been verified.
 | `cosmos3-nano` | video generation | async | `g6e.12xlarge` | 4× L40S | ~35 GB | ✅ end-to-end |
 | `lyra-2` | image→3D-world video | async | `p5.4xlarge` | 1× H100 80GB | gated | ✅ end-to-end |
 | `vjepa2` | representation | real-time | `g5.2xlarge` | 1× A10G | ~4 GB | ⚠️ encoder only |
+| `praxis-1` | robot policy (sim rollouts) | async | `p5.4xlarge` | 1× H100 80GB | ~148 GB, gated | ✅ end-to-end (EC2) |
 | `matrix-game-3` | real-time | real-time | `p5.48xlarge` | 8× H100 80GB | ~57 GB | ✅ end-to-end |
 | `matrix-game-2` | real-time | real-time | `g6e.4xlarge` | 1× L40S 48GB | ~20 GB | ✅ end-to-end |
 | `waypoint-1-5` | real-time | real-time | `p5.4xlarge` | 1× H100 80GB | ~12 GB | ✅ end-to-end |
@@ -68,6 +69,29 @@ Two caveats:
 Only Step 1 (video) is exposed. The Step-2 3D Gaussian-splat reconstruction is not
 wired up; `export_ply` is accepted by the API as a forward-looking hook but no runner
 consumes it.
+
+### `praxis-1`
+
+Upstream: [Praxis-1](https://github.com/runwayml/praxis-1-oss) (Runway). A world
+action model — a video-action robot policy that predicts the next chunk of actions
+together with the video they will produce. The cartridge runs it in closed loop in
+MuJoCo (`praxis-sim`): a job names a task of the DROID single-arm suite (or, with
+`rig: yam`, a bimanual bag task) and a list of seeds, and returns one MP4 of every
+episode — the rendered sim cameras with the model's predicted video underneath. A
+`summary.json` with success per seed is written beside it and served at `GET /result/<job_id>/summary`.
+
+Caveats:
+
+- **Deploy-tested on EC2** (2026-11-25, image 0.1.2, g7e.12xlarge): jobs from the
+  catalogue page on both rigs. SageMaker has not been run.
+- **CUDA 13.** The image needs an R580+ host driver, so `endpoint.yaml` pins the Base
+  OSS Ubuntu 24.04 AMI (`ec2.ami_ssm_parameter`). Not in the one-click Launch Stack yet.
+- **Gated weights.** Apache-2.0, but each user must accept the terms on Hugging Face
+  and stage with their own `HF_TOKEN`. The Launch Stack cannot stage them.
+- **One child process per job.** The runner starts upstream's sim script for each job
+  and never initialises CUDA itself; `NPROC_PER_NODE=1`.
+
+See [`inference/models/praxis-1/README.md`](../inference/models/praxis-1/README.md).
 
 ### `vjepa2`
 

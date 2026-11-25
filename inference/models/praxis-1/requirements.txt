@@ -1,0 +1,14 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The runner's own deps: the MP4 writer upstream's sim uses, and the ffmpeg binary
+# the runner joins episode videos with (imageio-ffmpeg ships it).
+#
+# Everything CUDA-sensitive — torch/torchvision (cu130), causal-conv1d (built from
+# source against them), flash-attn-4, the cuDNN pin and praxis itself — is installed
+# by the Dockerfile in a fixed order, because the order and flags are what make
+# them agree. They are deliberately not listed here.
+imageio>=2.30
+imageio-ffmpeg>=0.4
+# the two-arm (YAM) sim player's rotations; part of upstream's [sim] extra
+scipy>=1.10

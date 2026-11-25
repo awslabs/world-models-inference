@@ -4,8 +4,7 @@
 # Echo real-time test endpoint
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/echo-realtime/
-version: 0.1.1
-
+version: 0.1.2
 sagemaker:
   instance: ml.g5.2xlarge
   scale: { min: 0, max: 10 }

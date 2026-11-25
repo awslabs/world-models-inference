@@ -30,8 +30,7 @@
 # an internal spike/demo; revisit before any redistribution of the image.
 
 model_data: s3://world-model-accelerator-artifacts-${AWS_ACCOUNT_ID}/waypoint-1-5/
-version: 0.1.1
-
+version: 0.1.2
 # Weights licence is Apache-2.0, but the built image contains the GPL-3.0
 # world_engine library, so deploying this cartridge is gated: deploy.sh shows the
 # note below and requires acknowledgement. It is excluded from the EDSR

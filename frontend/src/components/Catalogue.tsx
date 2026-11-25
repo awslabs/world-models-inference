@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react';
 import { ArrowLeft, ExternalLink, Sparkles } from 'lucide-react';
 import { LingbotGenerator } from '@/components/LingbotGenerator';
 import { RealtimePlayer } from '@/components/RealtimePlayer';
+import { PraxisRunner } from '@/components/PraxisRunner';
 import {
   CARTRIDGES,
   CARTRIDGE_TYPES,
@@ -201,6 +202,11 @@ export const Catalogue = ({ endpointUrl }: { endpointUrl?: string }) => {
       return <RealtimePlayer cart={selected} onBack={() => setSelected(null)} />;
     }
     if (selected.status === 'ready' && selected.fps === 0) {
+      // praxis-1 is a robot policy run in simulation, not a text/image-to-video
+      // generator, so it gets its own page (rig, task, seeds, per-seed results).
+      const page = selected.id === 'praxis-1'
+        ? <PraxisRunner endpointUrl={endpointUrl} />
+        : <LingbotGenerator cartridgeId={selected.id} endpointUrl={endpointUrl} />;
       return (
         <div className="flex flex-col gap-5">
           <button
@@ -209,7 +215,7 @@ export const Catalogue = ({ endpointUrl }: { endpointUrl?: string }) => {
           >
             <ArrowLeft className="h-4 w-4" /> Back to catalogue
           </button>
-          <LingbotGenerator cartridgeId={selected.id} endpointUrl={endpointUrl} />
+          {page}
         </div>
       );
     }
