@@ -10,7 +10,7 @@
 # flask and CLIP-from-git for paths this runner never touches.
 
 transformers==4.57.3
-diffusers==0.35.0
+diffusers==0.38.0
 accelerate==1.15.0
 safetensors==0.8.0
 huggingface-hub==0.36.2
