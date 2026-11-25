@@ -9,7 +9,7 @@
 # upstream's requirements.txt, which also drags in TensorRT, ONNX, wandb,
 # flask and CLIP-from-git for paths this runner never touches.
 
-transformers==4.57.3
+transformers==5.10.1
 diffusers==0.35.0
 accelerate==1.15.0
 safetensors==0.8.0
